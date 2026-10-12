@@ -439,6 +439,10 @@ input:focus-visible {
 .composer input, .composer textarea { flex: 1; min-width: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; color: var(--ink); font: inherit; }
 .composer .hint { font-size: 11px; color: var(--faint); }
 .composer .to-toggle { justify-self: start; }
+.emoji-anchor { position: relative; display: flex; }
+.emoji-pop { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 50; box-shadow: 0 8px 24px rgb(0 0 0 / .35); border-radius: 8px; }
+.emoji-loading { width: 300px; height: 120px; display: grid; place-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 12px; }
+.btn.icon { padding: 6px 8px; display: inline-flex; align-items: center; }
 .msg.note p { color: var(--muted); }
 .msg.note > div { border-left: 2px solid var(--line); padding-left: 8px; }
 .note-tag { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }

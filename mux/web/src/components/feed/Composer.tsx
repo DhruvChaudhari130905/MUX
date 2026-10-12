@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useId, useState, FormEvent } from 'react';
+import React, { useId, useRef, useState, FormEvent } from 'react';
 import type { MessageTo } from '@/types';
+import { EmojiButton } from './EmojiPicker';
 
 interface ComposerProps {
   onSend: (text: string, to: MessageTo) => void;
@@ -21,6 +22,7 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
   const [to, setTo] = useState<MessageTo>('agent');
   // Set once the person picks a side themselves, so the @mention switch doesn't fight them
   const [picked, setPicked] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const target: MessageTo = fixedTarget ?? (canPostTeam ? to : 'agent');
 
@@ -28,6 +30,18 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
     setText(value);
     if (!value) setPicked(false);
     if (!fixedTarget && canPostTeam && !picked && MENTION_START.test(value)) setTo('team');
+  };
+
+  // Insert at the cursor (or the end), then put the cursor after the emoji
+  const insertEmoji = (emoji: string) => {
+    const input = inputRef.current;
+    const start = input?.selectionStart ?? text.length;
+    const end = input?.selectionEnd ?? text.length;
+    handleChange(text.slice(0, start) + emoji + text.slice(end));
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(start + emoji.length, start + emoji.length);
+    });
   };
 
   const pick = (next: MessageTo) => {
@@ -62,6 +76,7 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
           Message
         </label>
         <input
+          ref={inputRef}
           id={inputId}
           autoComplete="off"
           placeholder={target === 'team' ? 'Note to the team…' : 'Message the agent…'}
@@ -69,6 +84,7 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
           onChange={(e) => handleChange(e.target.value)}
           disabled={disabled}
         />
+        <EmojiButton onPick={insertEmoji} />
         <button className="btn primary" type="submit" disabled={disabled || !text.trim()}>
           Send
         </button>
