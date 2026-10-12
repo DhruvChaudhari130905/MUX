@@ -15,7 +15,7 @@ from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mux.api.account import owned_room_actors
 from mux.plans import get_plan
@@ -160,6 +160,25 @@ class MessageCreateRequest(BaseModel):
     """`POST /rooms/{id}/messages`."""
     text: str = Field(..., min_length=1, max_length=10000)
     to: Literal["agent", "team"] = "agent"
+
+
+def is_emoji(value: str) -> bool:
+    """One emoji (or a short ZWJ/skin-tone sequence): no ASCII letters, digits or spaces, not plain ASCII."""
+    if not 1 <= len(value) <= 16 or value.isascii():
+        return False
+    return not any(c.isspace() or (c.isascii() and c.isalnum()) for c in value)
+
+
+class ReactionRequest(BaseModel):
+    """`POST /rooms/{id}/messages/{message_id}/reactions`: toggles the caller's reaction."""
+    emoji: str
+
+    @field_validator("emoji")
+    @classmethod
+    def _one_emoji(cls, value: str) -> str:
+        if not is_emoji(value):
+            raise ValueError("emoji must be a single emoji")
+        return value
 
 
 class PlanUpdateRequest(BaseModel):
@@ -613,6 +632,22 @@ async def send_message(
         user_name=current_user.name,
         enqueue=False,  # the room runtime labels it with the coordinator, then enqueues merges/interrupts
     )
+    return accepted(actor)
+
+
+@router.post("/{room_id}/messages/{message_id}/reactions", response_model=Accepted)
+async def toggle_reaction(
+    room_id: str,
+    message_id: str,
+    request: ReactionRequest,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Add the caller's emoji to a person's message, or remove it if it's already there."""
+    try:
+        await actor.toggle_reaction(message_id, current_user.id, request.emoji)
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
     return accepted(actor)
 
 

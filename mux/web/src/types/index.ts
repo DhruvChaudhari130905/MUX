@@ -274,6 +274,7 @@ export type EventType =
   | 'skill.used'
   | 'message.posted'
   | 'message.labeled'
+  | 'message.reacted'
   | 'plan.drafted'
   | 'plan.edited'
   | 'plan.approved'

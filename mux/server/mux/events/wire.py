@@ -12,6 +12,7 @@ import hashlib
 from typing import Any, Optional, cast
 
 from mux.events.models import (
+    MessageReactionToggledEvent,
     AgentNoticeEvent,
     AIMessageChunkEvent,
     AIMessageCompletedEvent,
@@ -161,6 +162,9 @@ def _payload(event: BaseEvent) -> Optional[tuple[str, dict[str, Any]]]:
             "id": e.message_id, "room_id": room, "user_id": e.user_id, "text": e.content,
             "to": e.to or "agent", "created_at": ts, "user": user_view(e.user_id, e.user_name),
         }
+    if t == EventType.MESSAGE_REACTION_TOGGLED:
+        e = cast(MessageReactionToggledEvent, event)
+        return "message.reacted", {"message_id": e.message_id, "user_id": e.user_id, "emoji": e.emoji, "added": e.added}
     if t == EventType.AI_MESSAGE_CHUNK:
         e = cast(AIMessageChunkEvent, event)
         return "agent.text.delta", {"task_id": e.message_id, "delta": e.chunk}

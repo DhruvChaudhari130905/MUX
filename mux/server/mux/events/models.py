@@ -54,6 +54,7 @@ class EventType(str, Enum):
 
     # Message events
     USER_MESSAGE_SENT = "user_message_sent"
+    MESSAGE_REACTION_TOGGLED = "message_reaction_toggled"
     AI_MESSAGE_STARTED = "ai_message_started"
     AI_MESSAGE_CHUNK = "ai_message_chunk"
     AI_MESSAGE_COMPLETED = "ai_message_completed"
@@ -366,6 +367,15 @@ class UserMessageSentEvent(BaseEvent):
     user_name: Optional[str] = Field(default=None, description="Display name of sender")
     reply_to: Optional[str] = Field(default=None, description="ID of message being replied to")
     to: Optional[str] = Field(default=None, description="'agent' (steers the coordinator) or 'team' (a note between people)")
+
+
+class MessageReactionToggledEvent(BaseEvent):
+    """A person added or removed an emoji reaction on a person's message."""
+    type: EventType = EventType.MESSAGE_REACTION_TOGGLED
+    message_id: str = Field(..., description="The reacted-to message (a user_message_sent message_id)")
+    user_id: str = Field(..., description="Who reacted")  # pyright: ignore[reportIncompatibleVariableOverride]
+    emoji: str = Field(..., description="The emoji")
+    added: bool = Field(..., description="True when added, False when removed")
 
 
 class AIMessageStartedEvent(BaseEvent):

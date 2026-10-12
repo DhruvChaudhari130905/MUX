@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from mux.events.log import EventLog
 from mux.events.models import (
+    MessageReactionToggledEvent,
     BaseEvent,
     EventType,
     RoomCreatedEvent,
@@ -207,6 +208,8 @@ class RoomActor:
 
         # Persistent room settings (rebuilt from ROOM_* events on rehydration)
         self.members: dict[str, str] = {}  # user_id -> "editor" | "viewer" (owner is implicit)
+        self.message_ids: set[str] = set()  # people's messages, the ones that can get reactions
+        self.reactions: dict[str, dict[str, set[str]]] = {}  # message_id -> emoji -> user ids
         self.domain_roles: dict[str, str] = {}  # user_id -> "pm" | "design" | "eng" (owner included)
         self.member_names: dict[str, str] = {}  # user_id -> display name, when one was given
         self.created_at: Optional[datetime] = None
@@ -826,6 +829,26 @@ class RoomActor:
                 to=to,
             )
             await self._emit(event)
+            self.message_ids.add(event.message_id)
+
+    async def toggle_reaction(self, message_id: str, user_id: str, emoji: str) -> bool:
+        """Add or remove `user_id`'s `emoji` on a person's message; returns whether it is now on.
+
+        Raises KeyError for a message id that isn't a person's message in this room.
+        """
+        async with self._lock:
+            if message_id not in self.message_ids:
+                raise KeyError(message_id)
+            users = self.reactions.setdefault(message_id, {}).setdefault(emoji, set())
+            added = user_id not in users
+            if added:
+                users.add(user_id)
+            else:
+                users.discard(user_id)
+            await self._emit(MessageReactionToggledEvent(
+                **self._event_fields(user_id), message_id=message_id, emoji=emoji, added=added,
+            ))
+            return added
 
     async def enqueue_message(
         self, label: str, content: str, *, message_id: Optional[str] = None, user_id: Optional[str] = None,
@@ -1258,6 +1281,16 @@ class RoomActor:
                 e = cast(UserMessageSentEvent, event)
                 if e.user_name:
                     self.member_names[e.user_id] = e.user_name
+                self.message_ids.add(e.message_id)
+            elif t == EventType.MESSAGE_REACTION_TOGGLED:
+                # Chat state, not document state: a rewind re-applies earlier events with this False
+                if include_session_state:
+                    e = cast(MessageReactionToggledEvent, event)
+                    users = self.reactions.setdefault(e.message_id, {}).setdefault(e.emoji, set())
+                    if e.added:
+                        users.add(e.user_id)
+                    else:
+                        users.discard(e.user_id)
             elif t == EventType.ROOM_SHARING_UPDATED:
                 e = cast(RoomSharingUpdatedEvent, event)
                 self.public = e.public
