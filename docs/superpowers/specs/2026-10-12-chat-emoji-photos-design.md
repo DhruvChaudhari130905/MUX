@@ -14,6 +14,7 @@ message, and share photos (screenshots, mockups) with each other in the Team win
 | Who sees photos | People only (Team window). The agent never receives them, so any AI model works. |
 | Emoji scope | A picker in the composer, plus reactions on messages. |
 | Who can react / upload | Editors and owners (same rule as posting). Viewers see reactions and photos. |
+| Reactable messages | People's messages (both windows). Agent messages get their ids in the browser (`ai-12`, `coder-40`), so the server can't check them; no reaction bar on those. |
 | Out of scope | Photos to the agent, GIF search, deleting uploads, editing messages. |
 
 ## 1. Emoji picker (web only)
@@ -30,8 +31,8 @@ message, and share photos (screenshots, mockups) with each other in the Team win
 
 - New event `MessageReactionToggledEvent` in `mux/server/mux/events/models.py`
   (`EventType.MESSAGE_REACTION_TOGGLED`): `message_id`, `user_id`, `emoji`, `added: bool`.
-- `RoomActor.toggle_reaction(message_id, user_id, emoji)`: under the actor lock, checks the message exists
-  in the room's events, computes `added` from the current reaction set (kept in memory, rebuilt on replay),
+- `RoomActor.toggle_reaction(message_id, user_id, emoji)`: under the actor lock, checks the id is a person's
+  message in this room (`message_ids`, rebuilt on replay), computes `added` from the current reaction set (kept in memory, rebuilt on replay),
   appends the event. Never reaches the coordinator's inbox.
 - `POST /rooms/{id}/messages/{message_id}/reactions` with `{"emoji": "👍"}`, `require_editor`.
   404 for an unknown message; 422 unless `emoji` is one emoji (1–16 characters, no ASCII letters, digits or
