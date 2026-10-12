@@ -35,11 +35,12 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
 
   switch (event.type) {
     case 'room.created': {
-      newState.room = event.payload as any;
+      // The payload has no members (they arrive as member.joined), so keep the room's defaults under it
+      newState.room = { ...newState.room, ...(event.payload as any) };
       break;
     }
     case 'member.joined': {
-      newState.room.members.push(event.payload as any);
+      newState.room = { ...newState.room, members: [...(newState.room.members ?? []), event.payload as any] };
       break;
     }
     case 'member.role_changed': {
