@@ -64,6 +64,17 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       );
       break;
     }
+    case 'message.reacted': {
+      const { message_id, user_id, emoji, added } = event.payload;
+      newState.messages = newState.messages.map(m => {
+        if (m.id !== message_id) return m;
+        const users = (m.reactions?.[emoji] ?? []).filter(u => u !== user_id);
+        const reactions = { ...m.reactions, [emoji]: added ? [...users, user_id] : users };
+        if (!reactions[emoji].length) delete reactions[emoji];
+        return { ...m, reactions };
+      });
+      break;
+    }
     case 'plan.drafted': {
       newState.plan = (event.payload as any).items || [];
       break;

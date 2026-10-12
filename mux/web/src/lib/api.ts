@@ -130,11 +130,42 @@ export const api = {
   reloadSkills: (id: string) => fetchWithAuth<RoomSkill[]>(`/rooms/${id}/skills/reload`, { method: 'POST' }),
 
   // Messages
-  sendMessage: (roomId: string, text: string, to: MessageTo = 'agent') =>
+  sendMessage: (roomId: string, text: string, to: MessageTo = 'agent', attachments: string[] = []) =>
     fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text, to }),
+      body: JSON.stringify({ text, to, ...(attachments.length ? { attachments } : {}) }),
     }),
+  // Toggles the caller's reaction (editors only; only people's messages)
+  toggleReaction: (roomId: string, messageId: string, emoji: string) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/messages/${messageId}/reactions`, {
+      method: 'POST',
+      body: JSON.stringify({ emoji }),
+    }),
+  // PNG, JPEG, GIF or WebP up to 5 MB; send the id with a Team message
+  uploadImage: async (roomId: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const token = await getAccessToken();
+    const res = await fetch(`${API_BASE}/rooms/${roomId}/uploads`, {
+      method: 'POST',
+      body: form, // the browser sets the multipart Content-Type with its boundary
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      throw new ApiError(typeof error.detail === 'string' ? error.detail : `HTTP ${res.status}`, res.status);
+    }
+    return res.json() as Promise<{ id: string; content_type: string }>;
+  },
+  // <img> can't send the token, so images are fetched here and shown from an object URL
+  fetchUpload: async (roomId: string, uploadId: string) => {
+    const token = await getAccessToken();
+    const res = await fetch(`${API_BASE}/rooms/${roomId}/uploads/${uploadId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new ApiError(`HTTP ${res.status}`, res.status);
+    return res.blob();
+  },
 
   // Plan
   updatePlan: (roomId: string, items: PlanItem[]) =>

@@ -141,6 +141,10 @@ export interface Message {
   user_id: string;
   text: string;
   to?: MessageTo;
+  // Upload ids of photos in a Team note (GET /rooms/{id}/uploads/{upload_id})
+  attachments?: string[];
+  // emoji -> ids of the people who reacted with it
+  reactions?: Record<string, string[]>;
   // Unset while the coordinator hasn't labeled it yet; team notes never get one
   label?: MessageLabel;
   rationale?: string;
@@ -334,6 +338,11 @@ export interface MessageLabeledEvent extends BaseEvent {
   payload: { message_id: string; label: MessageLabel; rationale: string; domain?: string };
 }
 
+export interface MessageReactedEvent extends BaseEvent {
+  type: 'message.reacted';
+  payload: { message_id: string; user_id: string; emoji: string; added: boolean };
+}
+
 export interface PlanItemAddedEvent extends BaseEvent {
   type: 'plan.item_added';
   payload: PlanItem;
@@ -447,6 +456,7 @@ export interface AgentTextDeltaEvent extends BaseEvent {
 type TypedEventType =
   | 'message.posted'
   | 'message.labeled'
+  | 'message.reacted'
   | 'plan.item_added'
   | 'plan.item_updated'
   | 'conflict.opened'
@@ -480,6 +490,7 @@ export type AppEvent =
   | GenericEvent
   | MessagePostedEvent
   | MessageLabeledEvent
+  | MessageReactedEvent
   | PlanItemAddedEvent
   | PlanItemUpdatedEvent
   | ConflictOpenedEvent
