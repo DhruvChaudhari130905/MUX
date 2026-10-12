@@ -160,7 +160,7 @@ def _payload(event: BaseEvent) -> Optional[tuple[str, dict[str, Any]]]:
         e = cast(UserMessageSentEvent, event)
         return "message.posted", {
             "id": e.message_id, "room_id": room, "user_id": e.user_id, "text": e.content,
-            "to": e.to or "agent", "created_at": ts, "user": user_view(e.user_id, e.user_name),
+            "to": e.to or "agent", "attachments": e.attachments, "created_at": ts, "user": user_view(e.user_id, e.user_name),
         }
     if t == EventType.MESSAGE_REACTION_TOGGLED:
         e = cast(MessageReactionToggledEvent, event)

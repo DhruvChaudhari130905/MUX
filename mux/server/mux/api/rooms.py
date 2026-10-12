@@ -27,6 +27,7 @@ from mux.integrations.invite_email import room_link, send_invite_email
 from mux.rooms.access import hash_password, password_attempts, verify_password
 from mux.rooms.actor import PathConflictError, RoomActor
 from mux.rooms.registry import get_registry
+from mux.rooms.uploads import MAX_ATTACHMENTS, room_uploads
 
 logger = logging.getLogger(__name__)
 
@@ -157,9 +158,18 @@ class PasswordRequest(BaseModel):
 
 
 class MessageCreateRequest(BaseModel):
-    """`POST /rooms/{id}/messages`."""
-    text: str = Field(..., min_length=1, max_length=10000)
+    """`POST /rooms/{id}/messages`. Text, photos (Team notes only), or both."""
+    text: str = Field("", max_length=10000)
     to: Literal["agent", "team"] = "agent"
+    attachments: list[str] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
+
+    @model_validator(mode="after")
+    def _has_content(self) -> "MessageCreateRequest":
+        if not self.text and not self.attachments:
+            raise ValueError("A message needs text or a photo")
+        if self.attachments and self.to != "team":
+            raise ValueError("Photos can only be sent to the team")
+        return self
 
 
 def is_emoji(value: str) -> bool:
@@ -627,9 +637,13 @@ async def send_message(
     actor: RoomActor = Depends(get_room_actor),
 ) -> Accepted:
     """A steering message (to the agent) or a note between people (to the team)."""
+    uploads = room_uploads(actor.room_id)
+    missing = [a for a in request.attachments if uploads.find(a) is None]
+    if missing:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unknown photo: {missing[0]}")
     await actor.add_message(
         label="chat", content=request.text, message_id=str(uuid.uuid4()), user_id=current_user.id, to=request.to,
-        user_name=current_user.name,
+        user_name=current_user.name, attachments=request.attachments,
         enqueue=False,  # the room runtime labels it with the coordinator, then enqueues merges/interrupts
     )
     return accepted(actor)

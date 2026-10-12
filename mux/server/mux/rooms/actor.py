@@ -803,6 +803,7 @@ class RoomActor:
         to: Optional[str] = None,
         enqueue: bool = True,
         user_name: Optional[str] = None,
+        attachments: Optional[list[str]] = None,
     ) -> None:
         """Post a message and add it to the inbox (coordinator labels: merge, queue, interrupt, conflict, chat).
 
@@ -827,6 +828,7 @@ class RoomActor:
                 user_name=user_name or (self.member_names.get(user_id) if user_id else None),
                 reply_to=None,
                 to=to,
+                attachments=attachments or [],
             )
             await self._emit(event)
             self.message_ids.add(event.message_id)

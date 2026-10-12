@@ -367,6 +367,7 @@ class UserMessageSentEvent(BaseEvent):
     user_name: Optional[str] = Field(default=None, description="Display name of sender")
     reply_to: Optional[str] = Field(default=None, description="ID of message being replied to")
     to: Optional[str] = Field(default=None, description="'agent' (steers the coordinator) or 'team' (a note between people)")
+    attachments: list[str] = Field(default_factory=list, description="Upload ids of photos (Team notes only)")
 
 
 class MessageReactionToggledEvent(BaseEvent):

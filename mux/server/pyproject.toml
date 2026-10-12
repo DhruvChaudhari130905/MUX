@@ -5,6 +5,7 @@ description = "MUX backend: room actors, coordinator, coder loop, and API."
 requires-python = ">=3.11"
 # Pin versions during week 1 setup.
 dependencies = [
+  "python-multipart>=0.0.9",
   "fastapi",
   "uvicorn[standard]",
   "pydantic",
