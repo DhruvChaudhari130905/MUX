@@ -510,6 +510,9 @@ export default function RoomPage() {
           {/* Left: Agent Feed */}
           {!panels.feed && <PanelRail side="left" label="Feed" onOpen={() => togglePanel('feed', true)} />}
           <Feed
+            roomId={roomId}
+            canReact={currentUserMembership.permission !== 'viewer'}
+            memberNames={Object.fromEntries(room.members.map(m => [m.user_id, m.user.name]))}
             collapsed={!panels.feed}
             onCollapse={() => togglePanel('feed', false)}
             messages={state.messages}

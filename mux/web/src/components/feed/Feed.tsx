@@ -23,6 +23,9 @@ interface FeedProps {
   // Hidden (still mounted, so the draft and scroll position survive) while collapsed to its rail
   collapsed?: boolean;
   onCollapse?: () => void;
+  roomId: string;
+  canReact: boolean;
+  memberNames?: Record<string, string>;
 }
 
 type Window = 'agent' | 'team';
@@ -111,6 +114,9 @@ export function Feed({
   activeConflict,
   collapsed,
   onCollapse,
+  roomId,
+  canReact,
+  memberNames,
 }: FeedProps) {
   const [win, setWin] = React.useState<Window>('agent');
   const feedEndRef = React.useRef<HTMLDivElement>(null);
@@ -172,7 +178,7 @@ export function Feed({
             ) : (
               rows.map((row, i) =>
                 row.type === 'message' ? (
-                  <FeedItem key={row.key} message={row.message} currentUser={currentUser} />
+                  <FeedItem key={row.key} message={row.message} currentUser={currentUser} roomId={roomId} canReact={canReact} memberNames={memberNames} />
                 ) : (
                   <WorkCard key={row.key} steps={row.steps} live={i === rows.length - 1 && row.steps.some(s => s.pending)} />
                 ),
@@ -181,7 +187,7 @@ export function Feed({
           ) : teamMessages.length === 0 ? (
             <p className="feed-empty">Notes between people in the room. The agent never sees these.</p>
           ) : (
-            teamMessages.map(m => <FeedItem key={m.id} message={m} currentUser={currentUser} />)
+            teamMessages.map(m => <FeedItem key={m.id} message={m} currentUser={currentUser} roomId={roomId} canReact={canReact} memberNames={memberNames} />)
           )}
           <div ref={feedEndRef} />
         </div>

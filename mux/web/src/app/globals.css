@@ -446,6 +446,17 @@ input:focus-visible {
 .msg.note p { color: var(--muted); }
 .msg.note > div { border-left: 2px solid var(--line); padding-left: 8px; }
 .note-tag { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.msg { position: relative; }
+.reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.reaction { display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--raised); font-size: 12px; color: var(--ink); }
+.reaction .mono { font-size: 11px; color: var(--muted); }
+.reaction.mine { border-color: var(--coord); background: color-mix(in srgb, var(--coord) 16%, transparent); }
+.reaction:disabled { cursor: default; }
+.react-bar { position: absolute; top: -12px; right: 4px; display: none; gap: 2px; padding: 2px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 4px 12px rgb(0 0 0 / .3); }
+.react-bar button { padding: 2px 4px; border-radius: 4px; font-size: 14px; line-height: 1; color: var(--muted); }
+.react-bar button:hover { background: var(--raised); }
+.msg.reactable:hover .react-bar, .msg.reactable:focus-within .react-bar { display: flex; }
+@media (hover: none) { .msg.reactable .react-bar { display: flex; position: static; margin-top: 4px; grid-column: 2; justify-self: start; } }
 
 .tabs { display: flex; gap: 4px; }
 .urlbar { font: 12px/1 var(--font-mono); color: var(--faint); text-transform: none; letter-spacing: 0; }

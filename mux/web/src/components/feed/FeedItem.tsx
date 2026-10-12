@@ -3,21 +3,27 @@
 import React from 'react';
 import type { Message, User } from '@/types';
 import { LabelChip } from './LabelChip';
+import { ReactionBar, ReactionChips } from './Reactions';
 import { format } from 'date-fns';
 
 interface FeedItemProps {
   message: Message;
   currentUser: User;
+  roomId: string;
+  canReact: boolean;
+  memberNames?: Record<string, string>;
 }
 
-export function FeedItem({ message, currentUser }: FeedItemProps) {
+export function FeedItem({ message, currentUser, roomId, canReact, memberNames }: FeedItemProps) {
   const isAgent = message.user_id === 'agent' || message.user_id === 'mux';
   // The room's own agents post replies, reviews and task summaries; nothing labels those
   const isBot = isAgent || message.user_id === 'coordinator' || message.user_id === 'coder';
   const isNote = message.to === 'team';
+  // Only people's messages have server ids that reactions can point at
+  const reactable = !isBot;
 
   return (
-    <div className={`msg ${isNote ? 'note' : ''}`}>
+    <div className={`msg ${isNote ? 'note' : ''}${reactable && canReact ? ' reactable' : ''}`}>
       <span
         className={`av ${isAgent ? 'agent-av' : ''}`}
         style={{ background: isAgent ? undefined : message.user.color }}
@@ -37,7 +43,12 @@ export function FeedItem({ message, currentUser }: FeedItemProps) {
           )}
         </div>
         <p className="whitespace-pre-wrap">{message.text}</p>
+        {reactable && (
+          <ReactionChips roomId={roomId} messageId={message.id} reactions={message.reactions}
+            currentUserId={currentUser.id} canReact={canReact} names={memberNames} />
+        )}
       </div>
+      {reactable && canReact && <ReactionBar roomId={roomId} messageId={message.id} />}
     </div>
   );
 }
