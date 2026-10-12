@@ -16,7 +16,7 @@ interface FeedProps {
   messages: Message[];
   activity?: AgentActivity[];
   currentUser: User;
-  onSendMessage: (text: string, to: MessageTo) => void;
+  onSendMessage: (text: string, to: MessageTo, photos?: File[]) => Promise<void> | void;
   canPostTeam?: boolean;
   activeConflict?: { id: string; taskId: string; options: string[] };
   activeQuestion?: { id: string; taskId: string };
@@ -206,7 +206,7 @@ export function Feed({
       </div>
       <div hidden={win !== 'team'}>
         {canPostTeam ? (
-          <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="team" />
+          <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="team" canAttach={canPostTeam} />
         ) : (
           <div className="composer"><p className="hint">Viewers can read team notes but not post them.</p></div>
         )}

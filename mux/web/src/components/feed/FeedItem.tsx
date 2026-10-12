@@ -4,6 +4,7 @@ import React from 'react';
 import type { Message, User } from '@/types';
 import { LabelChip } from './LabelChip';
 import { ReactionBar, ReactionChips } from './Reactions';
+import { MessageImage } from './MessageImage';
 import { format } from 'date-fns';
 
 interface FeedItemProps {
@@ -42,7 +43,12 @@ export function FeedItem({ message, currentUser, roomId, canReact, memberNames }
             !isBot && <span className="chip pending">waiting for coordinator</span>
           )}
         </div>
-        <p className="whitespace-pre-wrap">{message.text}</p>
+        {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="msg-photos">
+            {message.attachments.map(id => <MessageImage key={id} roomId={roomId} uploadId={id} />)}
+          </div>
+        )}
         {reactable && (
           <ReactionChips roomId={roomId} messageId={message.id} reactions={message.reactions}
             currentUserId={currentUser.id} canReact={canReact} names={memberNames} />

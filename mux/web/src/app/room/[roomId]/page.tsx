@@ -269,14 +269,12 @@ export default function RoomPage() {
     };
   }, [roomId]);
 
-  const handleSendMessage = useCallback(async (text: string, to: MessageTo) => {
+  // Photos are uploaded first, then sent with the note; a failure is shown in the composer
+  const handleSendMessage = useCallback(async (text: string, to: MessageTo, photos: File[] = []) => {
     if (!roomId || !currentUser) return;
-    try {
-      await api.sendMessage(roomId, text, to);
-      // Message will appear via WebSocket
-    } catch (error) {
-      console.error('Failed to send message:', error);
-    }
+    const ids = await Promise.all(photos.map(p => api.uploadImage(roomId, p).then(r => r.id)));
+    await api.sendMessage(roomId, text, to, ids);
+    // Message will appear via WebSocket
   }, [roomId, currentUser]);
 
   // Latest files for callbacks that need to read them (rename/delete/upload)
