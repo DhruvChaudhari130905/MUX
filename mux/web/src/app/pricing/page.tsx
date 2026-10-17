@@ -19,7 +19,14 @@ const COMPARISON: { feature: string; free: React.ReactNode; pro: React.ReactNode
   { feature: 'Build Workers', free: 'Standard', pro: 'Priority Nebius', enterprise: 'Dedicated Runners' },
   { feature: 'GitHub Integration', free: false, pro: true, enterprise: true },
   { feature: 'Real-Time Voice & Cursors', free: false, pro: true, enterprise: true },
+  { feature: 'AI model choice per room', free: false, pro: true, enterprise: true },
+  { feature: 'Private rooms & invite links', free: false, pro: true, enterprise: true },
+  { feature: 'Room history', free: '7 days', pro: '90 days', enterprise: 'Unlimited' },
+  { feature: 'Support', free: 'Community', pro: 'Priority email', enterprise: 'Dedicated manager' },
+  { feature: 'Bring your own model keys', free: false, pro: false, enterprise: true },
+  { feature: 'Admin console & roles', free: false, pro: false, enterprise: true },
   { feature: 'SAML / SSO & Audit Logs', free: false, pro: false, enterprise: true },
+  { feature: 'Uptime SLA', free: false, pro: false, enterprise: '99.9%' },
 ];
 
 const FAQS = [
@@ -83,8 +90,8 @@ function FaqItem({ q, a }: { q: string; a: string }) {
   );
 }
 
-const PRO_MONTHLY = 29;
-const PRO_ANNUAL = 23;
+const PRO_MONTHLY = 20;
+const PRO_ANNUAL = 16;
 
 // Team-size slider: what Team Pro costs, and how many tokens the team gets
 function Estimator({ annual }: { annual: boolean }) {
@@ -329,6 +336,10 @@ export default function PricingPage() {
                   <Feature>Priority Nebius build workers</Feature>
                   <Feature>Full GitHub PR &amp; repo export</Feature>
                   <Feature>Live voice &amp; cursor presence</Feature>
+                  <Feature>Choose the AI model for each room</Feature>
+                  <Feature>Private rooms &amp; invite links</Feature>
+                  <Feature>90 days of room history</Feature>
+                  <Feature>Priority email support</Feature>
                 </div>
               </div>
               <PlanButton
@@ -358,6 +369,11 @@ export default function PricingPage() {
                   <Feature iconClass="text-secondary">20M AI tokens &amp; 2,000 builds per room</Feature>
                   <Feature iconClass="text-secondary">SSO / SAML &amp; Audit logs</Feature>
                   <Feature iconClass="text-secondary">Dedicated VPC &amp; custom runners</Feature>
+                  <Feature iconClass="text-secondary">Bring your own model keys &amp; routing</Feature>
+                  <Feature iconClass="text-secondary">Admin console with role-based access</Feature>
+                  <Feature iconClass="text-secondary">Unlimited room history &amp; data retention controls</Feature>
+                  <Feature iconClass="text-secondary">99.9% uptime SLA</Feature>
+                  <Feature iconClass="text-secondary">Dedicated success manager &amp; onboarding</Feature>
                 </div>
               </div>
               <PlanButton

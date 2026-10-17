@@ -16,8 +16,8 @@ import {
 } from '@/components/landing';
 import { setDemoMode } from '@/lib/demo';
 
-// Overview / landing screen. The page behaves like a room you just joined: teammates' cursors
-// move around the hero, the agent edits the headline, and your own pointer carries a "You" tag.
+// Overview / landing screen. The page behaves like a room you just joined: the agent edits the
+// headline and your own pointer carries a "You" tag.
 
 export default function OverviewPage() {
   const router = useRouter();

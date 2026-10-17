@@ -3,11 +3,11 @@
 import React from 'react';
 import Link from 'next/link';
 import { Zap, PlayCircle } from 'lucide-react';
-import { Magnetic, RoomCursors } from '@/components/shell';
+import { Magnetic } from '@/components/shell';
 import { AgentDiagram } from './AgentDiagram';
 
 // Hero: the pitch on the left, and on the right the product in one picture: eight seats sending
-// messages into one agent, which builds a live preview. Teammates' cursors roam over it.
+// messages into one agent, which builds a live preview.
 
 interface HeroStageProps {
   onOpenDemo: () => void;
@@ -16,7 +16,6 @@ interface HeroStageProps {
 export function HeroStage({ onOpenDemo }: HeroStageProps) {
   return (
     <div className="relative mx-auto grid w-full max-w-6xl items-center gap-12 lg:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)] lg:gap-8">
-      <RoomCursors />
       <div className="relative z-10 text-left">
         <h1 className="hero-title font-display font-bold text-on-surface">
           <span className="hero-line block" style={{ animationDelay: '0ms' }}>Eight people steering.</span>

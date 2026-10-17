@@ -25,7 +25,7 @@ const ROLE_OPTIONS: { value: DomainRole; label: string; detail: string; icon: Re
 // A room counts as live if something happened in it in the last three hours
 const LIVE_WINDOW_MS = 3 * 3600_000;
 
-const PLAN_PRICE: Record<string, string> = { free: '$0 / month', pro: '$29 / user / month', enterprise: 'Custom' };
+const PLAN_PRICE: Record<string, string> = { free: '$0 / month', pro: '$20 / user / month', enterprise: 'Custom' };
 
 function formatCap(n: number): string {
   return n >= 1_000_000 ? `${n / 1_000_000}M` : n.toLocaleString();
