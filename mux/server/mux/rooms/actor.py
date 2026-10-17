@@ -23,6 +23,10 @@ from mux.events.models import (
     RoomJoinedEvent,
     RoomClosedEvent,
     RoomSharingUpdatedEvent,
+    CoderRolesUpdatedEvent,
+    MemberAccessUpdatedEvent,
+    ChangeRequestedEvent,
+    ChangeRequestDecidedEvent,
     RoomInviteCreatedEvent,
     RoomInviteRevokedEvent,
     RoomPasswordSetEvent,
@@ -71,6 +75,8 @@ from mux.events.models import (
     SittingEndedEvent,
 )
 from mux.rooms.plan import Plan
+from mux.rooms.file_access import AccessRules, ChangeHeld, ChangeRequest, normalize_folder
+from mux.files.room_files import check_path
 from mux.rooms.inbox import Inbox
 from mux.rooms.presence import CursorPosition, PresenceManager, UserPresence, UserPresenceDict
 from mux.rooms.locks import LockManager
@@ -83,6 +89,7 @@ logger = logging.getLogger(__name__)
 
 ROOM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MEMBER_ROLES = frozenset({"editor", "viewer"})
+AGENT = "coder"  # the coder agent's user id (mux/agents/coder/tools/files.py CODER)
 
 # Events that only exist to be broadcast or that the replay does not need
 _PLAN_EDIT_TYPES = frozenset({"add", "update", "remove", "complete"})
@@ -212,6 +219,9 @@ class RoomActor:
         self.reactions: dict[str, dict[str, set[str]]] = {}  # message_id -> emoji -> user ids
         self.domain_roles: dict[str, str] = {}  # user_id -> "pm" | "design" | "eng" (owner included)
         self.member_names: dict[str, str] = {}  # user_id -> display name, when one was given
+        # Coder roles and folder access (mux/rooms/file_access.py), and changes held for approval
+        self.access = AccessRules()
+        self.change_requests: dict[str, ChangeRequest] = {}  # id -> request, every status
         self.created_at: Optional[datetime] = None
         self.public = False
         self.link_permission = "editor"  # role joining through the link grants when public
@@ -392,6 +402,54 @@ class RoomActor:
                 granted_by=granted_by,
                 domain_role=domain_role,
             ))
+
+    # ---- Coder roles and folder access ----
+
+    async def set_coder_roles(self, roles: dict[str, list[str]], user_id: str, renames: Optional[dict[str, str]] = None) -> None:
+        """Replace the room's coder roles. `renames` (old name -> new name) moves members to the new name;
+        members whose role is gone keep only their own folders."""
+        clean: dict[str, list[str]] = {}
+        for name, folders in roles.items():
+            label = name.strip()
+            if not label or len(label) > 40:
+                raise ValueError("A coder role needs a name of 1 to 40 characters")
+            clean[label] = sorted({normalize_folder(f) for f in folders})
+        async with self._lock:
+            self.access.roles = clean
+            await self._emit(CoderRolesUpdatedEvent(**self._event_fields(user_id), roles=clean, updated_by=user_id))
+            for member_id, role in list(self.access.member_role.items()):
+                renamed = (renames or {}).get(role, "").strip()
+                if role not in clean:
+                    new_role = renamed if renamed in clean else None
+                    folders = self.access.member_folders.get(member_id, [])
+                    self._apply_member_access(member_id, new_role, folders)
+                    await self._emit(MemberAccessUpdatedEvent(
+                        **self._event_fields(user_id), member_id=member_id, coder_role=new_role,
+                        folders=folders, updated_by=user_id,
+                    ))
+
+    async def set_member_access(self, member_id: str, coder_role: Optional[str], folders: list[str], user_id: str) -> None:
+        """Give an editor a coder role and/or folders of their own (both empty: unrestricted)."""
+        clean = sorted({normalize_folder(f) for f in folders})
+        async with self._lock:
+            if self.members.get(member_id) != "editor":
+                raise ValueError(f"{member_id} is not an editor in this room")
+            if coder_role is not None and coder_role not in self.access.roles:
+                raise ValueError(f"Unknown coder role {coder_role!r}")
+            self._apply_member_access(member_id, coder_role, clean)
+            await self._emit(MemberAccessUpdatedEvent(
+                **self._event_fields(user_id), member_id=member_id, coder_role=coder_role, folders=clean, updated_by=user_id,
+            ))
+
+    def _apply_member_access(self, member_id: str, coder_role: Optional[str], folders: list[str]) -> None:
+        if coder_role:
+            self.access.member_role[member_id] = coder_role
+        else:
+            self.access.member_role.pop(member_id, None)
+        if folders:
+            self.access.member_folders[member_id] = list(folders)
+        else:
+            self.access.member_folders.pop(member_id, None)
 
     async def set_sharing(self, public: bool, allow_anonymous: bool, user_id: str, link_permission: str = "editor") -> None:
         if link_permission not in MEMBER_ROLES:
@@ -603,6 +661,8 @@ class RoomActor:
 
     async def replace_plan(self, items: list[dict], user_id: str) -> list[dict]:
         async with self._lock:
+            old = {i["id"]: i for i in await self.plan.get_items()}
+            items = [self._bind_requesters(old.get(i.get("id", "")), i, user_id) for i in items]
             new_items = await self.plan.replace(items)
             event = PlanUpdatedEvent(
                 id=uuid4(),
@@ -982,14 +1042,23 @@ class RoomActor:
                 return f"{parent} is a file, so it can't contain {path}"
         return None
 
-    async def save_checked(self, path: str, content: Optional[str], base_version: Optional[int], user_id: str) -> tuple[str, Optional[int]]:
+    async def save_checked(
+        self, path: str, content: Optional[str], base_version: Optional[int], user_id: str,
+        on_behalf_of: Iterable[str] = (), task_id: Optional[str] = None,
+    ) -> tuple[str, Optional[int]]:
         """Version-checked save, atomic against every other change to the room.
 
         `content=None` deletes. `base_version` is the version the edit started from (None or 0: the file
         must not exist yet). Returns ("ok", new version), ("stale", current version) or ("locked", None)
         when someone else holds the file's soft lock. Raises PathConflictError when the path clashes with a
         folder (saving "src" while "src/App.tsx" exists, or "a.txt/b" while "a.txt" is a file).
+
+        A change outside the person's folders (mux/rooms/file_access.py) is stored as a change request and
+        raises ChangeHeld. For the coder, `on_behalf_of` is everyone whose requests shaped its task: the change
+        must suit all of their folders. With nobody (a task the whole room agreed on) it may change any file.
+        Raises InvalidPath for paths that would leave the project or dodge a folder ("server/../web/a.ts").
         """
+        check_path(path)
         async with self._lock:
             if content is not None and (clash := self._path_clash(path)):
                 raise PathConflictError(clash)
@@ -1000,6 +1069,26 @@ class RoomActor:
             current_version = current.version if current else None
             if (base_version or None) != current_version:
                 return "stale", current_version
+            people = list(on_behalf_of) if user_id == AGENT else [user_id]
+            subject = next((p for p in people if not self.access.can_change(p, path, self.owner_id)), None)
+            if subject:
+                # The agent editing a file it already sent for approval in this task adds to that one request
+                request = self.held_change(task_id, path) if user_id == AGENT else None
+                if request is not None and request.requested_by == subject:
+                    request.content = content
+                else:
+                    request = ChangeRequest(
+                        id=str(uuid4()), path=path, content=content, base_version=current_version, requested_by=subject,
+                        via="agent" if user_id == AGENT else "person", task_id=task_id,
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    self.change_requests[request.id] = request
+                await self._emit(ChangeRequestedEvent(
+                    **self._event_fields(user_id), request_id=request.id, path=path, content=content,
+                    base_version=request.base_version, requested_by=subject, via=request.via, task_id=task_id,
+                    approvers=sorted(self.change_approvers(path)),
+                ))
+                raise ChangeHeld(request)
             if content is None:
                 if current is not None:
                     await self._delete_file_unlocked(path, user_id)
@@ -1009,6 +1098,81 @@ class RoomActor:
             else:
                 await self._update_file_unlocked(path, content, user_id)
             return "ok", self._version_of(path)
+
+    def can_change(self, user_id: str, path: str) -> bool:
+        """Whether `user_id` may change `path` directly (False: it would go for approval)."""
+        return self.access.can_change(user_id, path, self.owner_id)
+
+    def change_approvers(self, path: str) -> set[str]:
+        """The owner plus every coder whose folders hold `path`."""
+        editors = [u for u, role in self.members.items() if role == "editor"]
+        return self.access.approvers(path, self.owner_id, editors)
+
+    def pending_changes(self) -> list[ChangeRequest]:
+        return [r for r in self.change_requests.values() if r.status == "pending"]
+
+    def listed_changes(self, closed: int = 20) -> list[ChangeRequest]:
+        """Pending changes, plus the latest rejected or stale ones so their requester can still get their edit."""
+        done = [r for r in self.change_requests.values() if r.status in ("rejected", "stale")]
+        return self.pending_changes() + done[-closed:]
+
+    def held_change(self, task_id: Optional[str], path: str) -> Optional[ChangeRequest]:
+        """The agent's pending change to `path` in task `task_id`, if it sent one for approval."""
+        if task_id is None:
+            return None
+        return next((r for r in self.pending_changes() if r.via == "agent" and r.task_id == task_id and r.path == path), None)
+
+    def _bind_requesters(self, old: Optional[dict], item: dict, user_id: str) -> dict:
+        """Who a plan task is for is the server's to say: a client's `requested_by` is ignored. A task a
+        restricted coder adds or changes is bound to their folders too, so editing the plan never lifts a limit."""
+        item = {k: v for k, v in item.items() if k != "requested_by"}
+        people = set((old or {}).get("requested_by") or [])
+        changed = old is None or any(item.get(k) != old.get(k) for k in item)
+        if changed and self.access.is_restricted(user_id, self.owner_id):
+            people.add(user_id)
+        if people:
+            item["requested_by"] = sorted(people)
+        return item
+
+    async def decide_change_request(self, request_id: str, user_id: str, approve: bool) -> ChangeRequest:
+        """Approve (apply it, unless the file moved on: then it is stale) or reject a pending change."""
+        async with self._lock:
+            request = self.change_requests[request_id]
+            is_editor = user_id == self.owner_id or self.members.get(user_id) == "editor"
+            if request.status != "pending" or not is_editor or not self.access.can_approve(user_id, request.path, self.owner_id):
+                raise PermissionError("You can't decide this change request")
+            status = "rejected"
+            if approve:
+                entry = self.manifest.get_entry(request.path)
+                if (entry.version if entry else None) != request.base_version or (
+                        request.content is not None and self._path_clash(request.path)):
+                    status = "stale"
+                else:
+                    status = "approved"
+                    if request.content is None:
+                        if entry is not None:
+                            await self._delete_file_unlocked(request.path, request.requested_by)
+                    elif entry is None:
+                        await self._create_file_unlocked(request.path, request.content, request.requested_by)
+                    else:
+                        await self._update_file_unlocked(request.path, request.content, request.requested_by)
+            return await self._close_change_request(request, status, user_id)
+
+    async def withdraw_change_request(self, request_id: str, user_id: str) -> ChangeRequest:
+        """The person a pending change is for takes it back."""
+        async with self._lock:
+            request = self.change_requests[request_id]
+            if request.status != "pending" or request.requested_by != user_id:
+                raise PermissionError("Only the person who asked can withdraw a pending change")
+            return await self._close_change_request(request, "withdrawn", user_id)
+
+    async def _close_change_request(self, request: ChangeRequest, status: str, user_id: str) -> ChangeRequest:
+        request.status = cast(Any, status)
+        request.decided_by = user_id
+        await self._emit(ChangeRequestDecidedEvent(
+            **self._event_fields(user_id), request_id=request.id, status=status, decided_by=user_id,
+        ))
+        return request
 
     # ---- Lock operations ----
 
@@ -1298,6 +1462,29 @@ class RoomActor:
                 self.public = e.public
                 self.allow_anonymous = e.allow_anonymous
                 self.link_permission = e.link_permission
+            # Who may change what is not document state: a rewind (which re-applies earlier events with this
+            # False) must not roll the owner's access settings back
+            elif t == EventType.CODER_ROLES_UPDATED:
+                if include_session_state:
+                    self.access.roles = dict(cast(CoderRolesUpdatedEvent, event).roles)
+            elif t == EventType.MEMBER_ACCESS_UPDATED:
+                if include_session_state:
+                    e = cast(MemberAccessUpdatedEvent, event)
+                    self._apply_member_access(e.member_id, e.coder_role, e.folders)
+            elif t == EventType.CHANGE_REQUESTED:
+                if include_session_state:
+                    e = cast(ChangeRequestedEvent, event)
+                    self.change_requests[e.request_id] = ChangeRequest(
+                        id=e.request_id, path=e.path, content=e.content, base_version=e.base_version,
+                        requested_by=e.requested_by, via=cast(Any, e.via), task_id=e.task_id,
+                        created_at=e.timestamp.isoformat(),
+                    )
+            elif t == EventType.CHANGE_REQUEST_DECIDED:
+                if include_session_state:
+                    e = cast(ChangeRequestDecidedEvent, event)
+                    if (request := self.change_requests.get(e.request_id)) is not None:
+                        request.status = cast(Any, e.status)
+                        request.decided_by = e.decided_by
             elif t == EventType.ROOM_INVITE_CREATED:
                 e = cast(RoomInviteCreatedEvent, event)
                 self.invites[e.email] = e.role
@@ -1527,6 +1714,20 @@ class RoomActor:
     async def command_edit_plan(self, edits: list[dict], issued_by: str) -> None:
         """Apply a list of edits to the plan."""
         async with self._lock:
+            old = {i["id"]: i for i in await self.plan.get_items()}
+            bound: list[dict] = []
+            for edit in edits:
+                if edit.get("type") == "add" and isinstance(edit.get("item"), dict):
+                    edit = {**edit, "item": self._bind_requesters(None, edit["item"], issued_by)}
+                elif edit.get("type") == "update" and isinstance(edit.get("changes"), dict):
+                    before = old.get(edit.get("item_id", ""))
+                    after = self._bind_requesters(before, {**(before or {}), **edit["changes"]}, issued_by)
+                    changes = {k: v for k, v in edit["changes"].items() if k != "requested_by"}
+                    if after.get("requested_by") != (before or {}).get("requested_by"):
+                        changes["requested_by"] = after.get("requested_by")
+                    edit = {**edit, "changes": changes}
+                bound.append(edit)
+            edits = bound
             # Validate every edit before changing anything, so the log never
             # records a partially-applied edit list
             await self.plan.replace(await self._plan_after_edits(edits))

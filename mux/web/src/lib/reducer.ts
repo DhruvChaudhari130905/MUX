@@ -52,6 +52,35 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       Object.assign(newState.room, event.payload);
       break;
     }
+    case 'access.roles_changed': {
+      newState.room = { ...newState.room, coder_roles: event.payload.coder_roles };
+      break;
+    }
+    case 'access.member_changed': {
+      const { user_id, coder_role, folders } = event.payload;
+      newState.room = {
+        ...newState.room,
+        members: newState.room.members.map(m => (m.user_id === user_id ? { ...m, coder_role, folders } : m)),
+      };
+      break;
+    }
+    case 'change.requested': {
+      const others = (newState.room.change_requests ?? []).filter(r => r.id !== event.payload.id);
+      newState.room = { ...newState.room, change_requests: [...others, event.payload] };
+      break;
+    }
+    case 'change.decided': {
+      // Applied or withdrawn: gone. Rejected or stale: kept, so the requester can still copy their edit
+      const { id, status, decided_by } = event.payload;
+      const requests = newState.room.change_requests ?? [];
+      newState.room = {
+        ...newState.room,
+        change_requests: status === 'approved' || status === 'withdrawn'
+          ? requests.filter(r => r.id !== id)
+          : requests.map(r => (r.id === id ? { ...r, status, decided_by } : r)),
+      };
+      break;
+    }
     case 'message.posted': {
       newState.messages = [...newState.messages, event.payload];
       break;
@@ -265,12 +294,15 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       break;
     }
     case 'ai.error': {
-      const { error } = (event as unknown as { payload: { error: string } }).payload;
+      const { error, paused } = (event as unknown as { payload: { error: string; paused?: boolean } }).payload;
       newState.messages = [...newState.messages, {
         id: `ai-${event.seq}`,
         room_id: newState.room.id,
         user_id: 'coordinator',
-        text: `The AI model failed (${error}). The room's owner can change it in AI model.`,
+        // A paused room's error is already plain words with what to do; anything else is the provider's text
+        text: paused
+          ? `${error.charAt(0).toUpperCase()}${error.slice(1)}. The coder is paused until then; send a message or press Run plan to try again.`
+          : `The AI model failed (${error}). The room's owner can change it in AI model.`,
         created_at: event.ts,
         user: { id: 'coordinator', email: '', name: 'Coordinator', initials: 'CO', color: 'hsl(190, 70%, 60%)' },
       } as Message];

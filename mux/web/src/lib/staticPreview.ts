@@ -18,6 +18,20 @@ document.addEventListener('click', function (e) {
 });
 </script>`;
 
+// Tells the parent about errors the page throws, so the coder can be asked to fix them
+const ERROR_SCRIPT = `<script>
+(function () {
+  function report(text) { parent.postMessage({ muxPreviewError: String(text).slice(0, 1000) }, '*'); }
+  window.addEventListener('error', function (e) {
+    if (e.error || e.message) report((e.error && e.error.stack) || (e.message + ' (line ' + e.lineno + ')'));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    report('Unhandled promise rejection: ' + ((r && (r.stack || r.message)) || r));
+  });
+})();
+</script>`;
+
 // The sandboxed frame has no storage, so reading localStorage throws; give it in-memory stand-ins
 const STORAGE_SHIM = `<script>
 (function () {
@@ -185,7 +199,7 @@ export function buildStaticPage(files: Files, page: string): string {
   });
   const dir = page.includes('/') ? page.slice(0, page.lastIndexOf('/')) : '';
   const shim = doc.createElement('div');
-  shim.innerHTML = STORAGE_SHIM + (Object.keys(assets).length ? assetScript(assets, dir) : '');
+  shim.innerHTML = ERROR_SCRIPT + STORAGE_SHIM + (Object.keys(assets).length ? assetScript(assets, dir) : '');
   doc.head.prepend(...Array.from(shim.childNodes));
 
   return `<!doctype html>\n${doc.documentElement.outerHTML.replace('</body>', `${NAVIGATE_SCRIPT}</body>`)}`;

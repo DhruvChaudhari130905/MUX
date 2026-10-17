@@ -25,6 +25,12 @@ _API_KEY = re.compile(r"^[\x21-\x7e]{1,500}$")
 CHECK_TIMEOUT = 20.0
 
 
+def _valid_key(value: str) -> str:
+    if value and not _API_KEY.fullmatch(value):
+        raise ValueError("the API key has characters that aren't allowed")
+    return value
+
+
 class Models(BaseModel):
     lightning: str
     super: str
@@ -47,9 +53,7 @@ class AiSettingsRequest(BaseModel):
     @field_validator("api_key")
     @classmethod
     def _key(cls, value: str) -> str:
-        if value and not _API_KEY.fullmatch(value):
-            raise ValueError("the API key has characters that aren't allowed")
-        return value
+        return _valid_key(value)
 
 
 def server_has_model() -> bool:
@@ -71,23 +75,50 @@ async def get_ai(room_id: str, current_user: User = Depends(require_viewer),
     return ai_view(actor)
 
 
-@router.put("/{room_id}/ai")
-async def set_ai(room_id: str, request: AiSettingsRequest, current_user: User = Depends(require_owner),
-                 actor: RoomActor = Depends(get_room_actor_dep)) -> dict[str, Any]:
+async def _room_key(base_url: str, api_key: str, actor: RoomActor) -> tuple[str, str]:
+    """(key, encrypted key): the typed key, else the room's saved one. 400 for a refused address or no key."""
     try:
-        await check_url_async(request.base_url)
+        await check_url_async(base_url)
     except UrlNotAllowed as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     try:
-        if request.api_key:
-            key, stored = request.api_key, encrypt_value(request.api_key)
-        elif actor.ai_settings is not None:
+        if api_key:
+            return api_key, encrypt_value(api_key)
+        if actor.ai_settings is not None:
             stored = actor.ai_settings["api_key"]
-            key = decrypt_value(stored)
-        else:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the API key")
+            return decrypt_value(stored), stored
     except SecretsUnavailable as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Enter the API key")
+
+
+class ModelListRequest(BaseModel):
+    base_url: str = Field(..., min_length=8, max_length=500)
+    api_key: str = Field("", max_length=500, description="Empty: use the saved key")
+
+    @field_validator("api_key")
+    @classmethod
+    def _key(cls, value: str) -> str:
+        return _valid_key(value)
+
+
+@router.post("/{room_id}/ai/models")
+async def list_ai_models(room_id: str, request: ModelListRequest, current_user: User = Depends(require_owner),
+                         actor: RoomActor = Depends(get_room_actor_dep)) -> dict[str, list[str]]:
+    """The models the owner's key can use at `base_url`, so they pick ids instead of typing them."""
+    key, _ = await _room_key(request.base_url, request.api_key, actor)
+    llm = OpenAILLM(request.base_url, key, {}, max_retries=0, timeout=CHECK_TIMEOUT)
+    try:
+        return {"models": await llm.list_models()}
+    except Exception as e:  # openai.APIError and transport errors
+        detail = room_llm.redact(f"{type(e).__name__}: {e}", key)[:300]
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not list the models: {detail}") from None
+
+
+@router.put("/{room_id}/ai")
+async def set_ai(room_id: str, request: AiSettingsRequest, current_user: User = Depends(require_owner),
+                 actor: RoomActor = Depends(get_room_actor_dep)) -> dict[str, Any]:
+    key, stored = await _room_key(request.base_url, request.api_key, actor)
     models = {ModelRole(role): model for role, model in request.models.model_dump().items()}
     llm = OpenAILLM(request.base_url, key, models, thinking=request.provider == "token_factory",
                     max_retries=0, timeout=CHECK_TIMEOUT)

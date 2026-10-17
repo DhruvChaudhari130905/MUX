@@ -1,4 +1,7 @@
 {
-  "note": "Packages baked into the starter image. The coder cannot install anything else.",
-  "packages": []
+  "note": "Packages baked into the sandbox image (mux/infra/sandbox-image/package.json). Builds run with no network, so the coder cannot install anything else.",
+  "packages": [
+    "react", "react-dom", "@types/react", "@types/react-dom", "typescript", "vite", "@vitejs/plugin-react",
+    "tailwindcss", "@tailwindcss/vite", "vitest", "jsdom", "@testing-library/react", "hono", "@types/node"
+  ]
 }

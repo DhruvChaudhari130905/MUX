@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Share2, Code2, User, Menu, X, Check } from 'lucide-react';
 import { Logo } from './Logo';
 import { formatClock, useTicker } from './Motion';
-import { ScrollProgress, SpotlightTracker, YouCursor } from './LiveChrome';
+import { SpotlightTracker, YouCursor } from './LiveChrome';
 import { DemoBanner } from './DemoBanner';
 import { getUser } from '@/lib/supabase';
 import { colorForId, getLastRoom, LAST_ROOM_CHANGED, type LastRoom } from '@/lib/preferences';
@@ -198,7 +198,6 @@ export function SiteHeader({ active, profileActive = false }: SiteHeaderProps) {
 
   return (
     <>
-    <ScrollProgress />
     <YouCursor />
     <SpotlightTracker />
     <DemoBanner />

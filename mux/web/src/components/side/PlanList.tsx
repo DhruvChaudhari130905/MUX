@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Play, Plus, Trash2 } from 'lucide-react';
 import type { PlanItem } from '@/types';
 
 interface PlanListProps {
@@ -11,6 +11,8 @@ interface PlanListProps {
   canApprove: boolean;
   onUpdate: (items: PlanItem[]) => void;
   onApprove: () => void;
+  // "Run plan": the coder retries the tasks it stopped on
+  onRun?: () => Promise<void> | void;
   onKickoff?: () => void;
 }
 
@@ -34,9 +36,11 @@ const statusLabels: Record<string, string> = {
 const isChangeable = (item: PlanItem) => item.status !== 'done' && item.status !== 'doing';
 
 // Each edit sends the whole plan, built from the latest plan the room has seen
-export function PlanList({ plan, canEdit, canApprove, onUpdate, onApprove, onKickoff }: PlanListProps) {
+export function PlanList({ plan, canEdit, canApprove, onUpdate, onApprove, onRun, onKickoff }: PlanListProps) {
   const [newTitle, setNewTitle] = useState('');
+  const [running, setRunning] = useState(false);
   const hasDrafts = plan.some(p => p.status === 'draft');
+  const stopped = plan.filter(p => p.status === 'skipped_question').length;
   const done = plan.filter(p => p.status === 'done').length;
 
   const rename = (id: string, title: string) => {
@@ -140,6 +144,26 @@ export function PlanList({ plan, canEdit, canApprove, onUpdate, onApprove, onKic
             <Plus className="h-4 w-4" />
           </button>
         </form>
+      )}
+
+      {stopped > 0 && canEdit && onRun && (
+        <button
+          className="btn mt-2 flex w-full items-center justify-center gap-1.5"
+          type="button"
+          disabled={running}
+          onClick={async () => {
+            setRunning(true);
+            try {
+              await onRun();
+            } finally {
+              setRunning(false);
+            }
+          }}
+          title="The coder retries every task it stopped on"
+        >
+          <Play className="h-3.5 w-3.5" />
+          {running ? 'Starting…' : `Run plan · retry ${stopped} stopped ${stopped === 1 ? 'task' : 'tasks'}`}
+        </button>
       )}
 
       {hasDrafts && canApprove && (

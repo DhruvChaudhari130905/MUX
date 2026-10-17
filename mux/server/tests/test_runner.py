@@ -151,3 +151,14 @@ async def test_unsafe_test_patterns_are_refused(bad: str) -> None:
     with pytest.raises(InvalidPattern):
         await r.test(MANIFEST, bad)
     assert fake.calls == []
+
+
+async def test_build_files_takes_the_files_themselves() -> None:
+    fake = FakeSandbox({BUILD: [res(0)]})
+    out = await Runner(fake, image="mux-starter").build_files({"src/a.ts": b"x", "logo.png": b"data:image/png;base64,iVBORw=="})
+    assert out.passed and fake.calls[0]["files"] == {f"{PROJECT_DIR}/src/a.ts": b"x", f"{PROJECT_DIR}/logo.png": b"\x89PNG"}
+
+
+async def test_build_files_refuses_bad_paths() -> None:
+    with pytest.raises(InvalidPath):
+        await Runner(FakeSandbox({}), image="mux-starter").build_files({"../x": b"x"})

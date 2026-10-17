@@ -268,6 +268,75 @@ async def test_stopped_task_is_parked_behind_a_question(setup):
     await registry.shutdown_all()
 
 
+async def test_run_plan_retries_every_stopped_task(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs, plan=[
+        {"id": "t1", "title": "Booking page", "status": "draft"},
+        {"id": "t2", "title": "Pricing page", "status": "skipped_question", "notes": "error: 429"},
+    ])
+    log = logs[actor.room_id]
+
+    # t1 stops and is parked behind "Retry it?"; t2 stopped earlier and its card is long gone
+    llm.push("thinking", "still thinking", "hmm")
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: of_type(log, EventType.QUESTION_ASKED))
+    # A task waiting on the coder's own question is left for the team to answer
+    await runtimes[0]._ask("Which colour?", ["Red", "Blue"], "Red", "t3", parked=False)
+    await actor.add_plan_item({"id": "t3", "title": "Theme", "status": "skipped_question"}, "alice")
+
+    llm.push(tool_reply(("finish_task", {"summary": "t1 done"})), tool_reply(("finish_task", {"summary": "t2 done"})))
+    assert await runtimes[0].run_stopped("alice") == 2
+    await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
+    assert [(p["id"], p["status"]) for p in await actor.get_plan()] == [
+        ("t1", "done"), ("t2", "done"), ("t3", "skipped_question")]
+    # The parked card was answered, so it closes for everyone
+    assert of_type(log, EventType.COMMAND_ANSWER_QUESTION)
+    assert await runtimes[0].run_stopped("alice") == 0
+    await registry.shutdown_all()
+
+
+async def test_errors_left_after_a_task_become_a_fix_task_the_coder_runs(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    log = logs[actor.room_id]
+
+    # The coder leaves an import of a missing file behind: finish_task is refused twice, then let through
+    broken = tool_reply(("write_file", {"path": "app.js", "content": "import x from './missing.js';\n"}),
+                        ("finish_task", {"summary": "done"}))
+    fixed = tool_reply(("write_file", {"path": "missing.js", "content": "export default 1;\n"}),
+                       ("finish_task", {"summary": "fixed the import"}))
+    llm.push(broken, tool_reply(("finish_task", {"summary": "done now"})),
+             tool_reply(("finish_task", {"summary": "really done"})), fixed)
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
+    plan = await actor.get_plan()
+    assert [(p["id"], p["status"]) for p in plan] == [("t1", "done"), ("t2", "done")]
+    assert plan[1]["title"] == "Fix errors in the code" and "missing.js" in plan[1]["notes"]
+    assert runtimes[0]._fix_attempts == 0  # the check after the fix found nothing
+    await registry.shutdown_all()
+
+
+async def test_reported_errors_get_one_fix_task_at_a_time_and_stop_after_two_tries(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)  # a draft plan: fix tasks wait for approval, so nothing runs
+    log = logs[actor.room_id]
+    rt = runtimes[0]
+
+    first = await rt.report_errors(["TypeError: x is undefined (app.js:3)"], "preview")
+    assert first == "t2" and (await actor.get_plan())[1]["status"] == "draft"
+    assert await rt.report_errors(["TypeError: x is undefined (app.js:3)"], "preview") is None  # one is waiting
+    await actor.update_plan_item(first, {"status": "done"}, "coder")
+    assert await rt.report_errors(["still broken"], "preview") == "t3"
+    await actor.update_plan_item("t3", {"status": "done"}, "coder")
+    # Two fixes didn't help: the room is told once, and no more tasks are added
+    assert await rt.report_errors(["still broken"], "preview") is None
+    assert await rt.report_errors(["still broken"], "preview") is None
+    replies = notices(log, "coordinator.reply")
+    assert len(replies) == 1 and "couldn't fix" in replies[0]["text"]
+    assert len(await actor.get_plan()) == 3
+    await registry.shutdown_all()
+
+
 @pytest.mark.asyncio
 async def test_coder_does_not_read_binary_files_as_text(setup):
     registry, llm, logs, _ = setup
@@ -484,6 +553,51 @@ async def test_model_errors_reach_the_room_once_a_minute(switchable):
     await until(lambda: notices(log, "ai.error"))
     await asyncio.sleep(0.2)
     assert notices(log, "ai.error") == [{"error": "401 invalid key [hidden]"}]
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_out_of_credit_pauses_the_coder_until_the_settings_change(switchable):
+    from mux.agents.llm import ModelError
+    registry, llm, logs = switchable
+    actor = await new_room(registry, llm, logs, plan=[{"id": "t1", "title": "One", "status": "draft"},
+                                                     {"id": "t2", "title": "Two", "status": "draft"}])
+    log = logs[actor.room_id]
+    llm.on = True
+    llm.error = ModelError("the AI account is out of credit (402). Add funds", stuck=True)
+    await actor.approve_plan_items(["t1", "t2"], "alice")
+    await until(lambda: notices(log, "ai.error"))
+    await asyncio.sleep(0.2)
+
+    # One clear notice, both tasks still queued, no "Retry it?" card per task, and the coder stopped trying
+    assert notices(log, "ai.error") == [{"error": "the AI account is out of credit (402). Add funds", "paused": True}]
+    assert [i["status"] for i in await actor.get_plan()] == ["todo", "todo"]
+    assert not of_type(log, EventType.QUESTION_ASKED)
+
+    # A new key (or funds added, then Run plan) and the queue carries on
+    llm.error = None
+    llm.push(tool_reply(("finish_task", {"summary": "one"})), tool_reply(("finish_task", {"summary": "two"})))
+    await actor.save_ai_settings("openai", "https://api.example.com/v1", "ENC", {"lightning": "a", "super": "b", "ultra": "b"}, "alice")
+    await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_after_a_pause_restarts_the_coder(switchable):
+    from mux.agents.llm import ModelError
+    registry, llm, logs = switchable
+    actor = await new_room(registry, llm, logs)
+    log = logs[actor.room_id]
+    llm.on = True
+    llm.error = ModelError("out of credit", stuck=True)
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: notices(log, "ai.error"))
+
+    # Funds added on the provider's site: the next message gets an answer, and the waiting task runs
+    llm.error = None
+    llm.push(CoordinatorAction(label="chat", rationale="hello", reply="Hi"), tool_reply(("finish_task", {"summary": "done"})))
+    await actor.add_message("chat", "are you back?", message_id="m1", user_id="alice", enqueue=False)
+    await until(lambda: of_type(log, EventType.CHECKPOINT_CREATED))
     await registry.shutdown_all()
 
 
@@ -771,4 +885,170 @@ async def test_coder_sees_and_uses_the_rooms_skills(setup, tmp_path, monkeypatch
     system = coder_call.messages[0]["content"]
     assert "- frontend-design: Distinctive UIs" in system and "tdd" not in system and "gone" not in system
     assert notices(log, "skill.used") == [{"name": "frontend-design"}]
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_coder_builds_in_the_sandbox_on_the_rooms_files(tmp_path, monkeypatch):
+    from mux.replay.fake_sandbox import FakeSandbox
+    from mux.sandbox.client import RunResult
+    from mux.sandbox.runner import BUILD_CMD, Runner, wrap
+
+    monkeypatch.chdir(tmp_path)
+    logs: dict[str, InMemoryEventLog] = {}
+    monkeypatch.setattr(room_registry, "get_event_log", lambda rid: logs.setdefault(rid, InMemoryEventLog(rid)))
+    llm = FakeLLM()
+    sandbox = FakeSandbox({wrap("build", BUILD_CMD): [RunResult(1, "src/Booking.tsx:1: bad type", None, 1.0)]})
+    registry = RoomRegistry(runtime_factory=lambda actor: RoomRuntime(
+        actor, llm, runner=Runner(sandbox, image="mux-sandbox"), vote_timeout=30, question_timeout=30, max_turns=3))
+    actor = await new_room(registry, llm, logs)
+    log = logs[actor.room_id]
+
+    llm.push(
+        tool_reply(("write_file", {"path": "src/Booking.tsx", "content": "export const Booking = 1;\n"})),
+        tool_reply(("run_build", {})),
+        tool_reply(("finish_task", {"summary": "Added the booking page"})),
+    )
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: of_type(log, EventType.TASK_FINISHED))
+
+    # The coder is offered builds, and the build gets the room's current files under /app
+    offered = {t["function"]["name"] for t in next(c for c in llm.calls if c.tools).tools or []}
+    assert {"run_build", "run_tests"} <= offered
+    assert sandbox.calls[0]["files"]["/app/src/Booking.tsx"] == b"export const Booking = 1;\n"
+    assert notices(log, "build.result")[0]["errors"] == ["src/Booking.tsx:1: bad type"]
+    assert (await actor.get_budget_status())["sandbox_runs_used"] == 1
+    await registry.shutdown_all()
+
+
+# --- folder access: the coder works within the requester's folders ----------
+
+async def backend_coder(actor: RoomActor) -> None:
+    await actor.add_member("ravi", "editor", granted_by="alice")
+    await actor.add_member("fatima", "editor", granted_by="alice")
+    await actor.set_coder_roles({"Backend": ["server"], "Frontend": ["web"]}, "alice")
+    await actor.set_member_access("ravi", "Backend", [], "alice")
+    await actor.set_member_access("fatima", "Frontend", [], "alice")
+
+
+@pytest.mark.asyncio
+async def test_agent_edits_outside_the_requesters_folders_are_held(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    tools = ActorFileTools(actor, on_behalf_of=lambda: ["ravi"], task_id="t1")
+    assert (await tools.write_file("server/a.py", "ok"))["version"] == 1
+    held = await tools.write_file("web/App.tsx", "x")
+    assert held["ok"] is True and held["held"] is True and "Do not retry" in held["message"]
+    assert await actor.file_version("web/App.tsx") is None
+    request = actor.change_requests[held["request_id"]]
+    assert (request.via, request.requested_by, request.task_id) == ("agent", "ravi", "t1")
+    assert (await tools.delete_file("server/a.py", 1))["deleted"] is True
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_agent_without_a_single_requester_is_unrestricted(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    assert (await ActorFileTools(actor, on_behalf_of=lambda: []).write_file("web/App.tsx", "x"))["ok"] is True
+    assert (await ActorFileTools(actor).write_file("README.md", "x"))["ok"] is True
+    assert actor.pending_changes() == []
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_a_task_from_one_person_holds_the_agents_edits_outside_their_folders(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    log = logs[actor.room_id]
+    llm.push(tool_reply(("finish_task", {"summary": "Booking page"})))
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 1)
+
+    llm.push(
+        CoordinatorAction(label="merge", rationale="small change", domain="ui"),
+        tool_reply(("write_file", {"path": "server/api.py", "content": "ok\n"}),
+                   ("write_file", {"path": "web/App.tsx", "content": "<h1/>\n"})),
+        tool_reply(("finish_task", {"summary": "Login button"})),
+    )
+    await actor.add_message("chat", "fix the login button", message_id="m1", user_id="ravi", enqueue=False)
+    await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 2)
+    task = (await actor.get_plan())[-1]
+    assert task["requested_by"] == ["ravi"] and task["status"] == "done"
+    assert await actor.get_file("server/api.py") == "ok\n" and await actor.file_version("web/App.tsx") is None
+    [request] = actor.pending_changes()
+    assert (request.path, request.via, request.requested_by, request.task_id) == ("web/App.tsx", "agent", "ravi", task["id"])
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_queued_work_records_who_asked(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    log = logs[actor.room_id]
+    llm.push(CoordinatorAction(label="queue", rationale="new work", add_plan_item=AddPlanItem(title="Pricing API")))
+    await actor.add_message("chat", "add a pricing api", message_id="m1", user_id="ravi", enqueue=False)
+    await until(lambda: len(of_type(log, EventType.PLAN_ITEM_ADDED)) == 1)
+    assert (await actor.get_plan())[-1]["requested_by"] == ["ravi"]
+    assert (await actor.get_plan())[0].get("requested_by") is None  # the owner's plan
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_people_merging_in_add_their_folders_as_limits(setup):
+    from mux.agents.coordinator.prompts import Message
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    rt = runtimes[0]
+    rt._current_task, rt._current_kind, rt._task_requesters = "t1", None, set()  # a task the room agreed on
+    merge = CoordinatorAction(label="merge", rationale="fits", domain="ui")
+    await rt._apply(merge, Message("m1", "ravi", None, "also change web/app.ts"), await actor.get_plan())
+    assert rt._task_requesters == {"ravi"}
+    await rt._apply(merge, Message("m2", "fatima", None, "make it red"), await actor.get_plan())
+    assert rt._task_requesters == {"ravi", "fatima"}
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_agent_writes_must_suit_every_requester(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    tools = ActorFileTools(actor, on_behalf_of=lambda: ["ravi", "fatima"], task_id="t1")
+    server, web = await tools.write_file("server/a.py", "x"), await tools.write_file("web/b.ts", "y")
+    assert server["held"] and web["held"]
+    assert {(r.path, r.requested_by) for r in actor.pending_changes()} == {("server/a.py", "fatima"), ("web/b.ts", "ravi")}
+    assert (await ActorFileTools(actor, on_behalf_of=lambda: ["alice"]).write_file("README.md", "ok"))["ok"]
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_repeated_agent_edits_to_one_file_build_one_request(setup):
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs)
+    await backend_coder(actor)
+    assert await actor.save_checked("web/App.tsx", "a\nb\n", None, "fatima") == ("ok", 1)
+    tools = ActorFileTools(actor, on_behalf_of=lambda: ["ravi"], task_id="t1")
+    first = await tools.edit_file("web/App.tsx", 1, [{"find": "a", "replace": "A"}])
+    # The agent reads its own held change back, so the next edit builds on it
+    assert (await tools.read_file("web/App.tsx"))["content"].startswith("A")
+    second = await tools.edit_file("web/App.tsx", 1, [{"find": "b", "replace": "B"}])
+    assert first["request_id"] == second["request_id"]
+    [request] = actor.pending_changes()
+    assert request.content == "A\nB\n" and request.base_version == 1
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_fix_tasks_after_a_task_keep_its_requesters(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    rt = runtimes[0]
+    task = await rt.report_errors(["boom"], "the code check", ["ravi"])
+    assert next(i for i in await actor.get_plan() if i["id"] == task)["requested_by"] == ["ravi"]
     await registry.shutdown_all()

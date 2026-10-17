@@ -26,6 +26,10 @@ class EventType(str, Enum):
     ROOM_AI_SETTINGS_CLEARED = "room_ai_settings_cleared"
     KICKOFF_REQUESTED = "kickoff_requested"
     ROOM_SKILLS_SET = "room_skills_set"
+    CODER_ROLES_UPDATED = "coder_roles_updated"
+    MEMBER_ACCESS_UPDATED = "member_access_updated"
+    CHANGE_REQUESTED = "change_requested"
+    CHANGE_REQUEST_DECIDED = "change_request_decided"
 
     # User presence events
     USER_JOINED = "user_joined"
@@ -207,6 +211,43 @@ class RoomSharingUpdatedEvent(BaseEvent):
     updated_by: str = Field(..., description="User who changed the settings")
     # Events written before link permissions existed replay as "editor", which is what joining granted then
     link_permission: str = Field("editor", description="Role granted by joining through the link (editor or viewer)")
+
+
+class CoderRolesUpdatedEvent(BaseEvent):
+    """The owner replaced the room's coder roles (mux/rooms/file_access.py)."""
+    type: EventType = EventType.CODER_ROLES_UPDATED
+    roles: Dict[str, List[str]] = Field(..., description="Role name -> folders")
+    updated_by: str = Field(..., description="User who changed the roles")
+
+
+class MemberAccessUpdatedEvent(BaseEvent):
+    """The owner set an editor's coder role and personal folders."""
+    type: EventType = EventType.MEMBER_ACCESS_UPDATED
+    member_id: str = Field(..., description="Editor whose access changed")
+    coder_role: Optional[str] = Field(default=None, description="Coder role name, or None")
+    folders: List[str] = Field(default_factory=list, description="Folders of their own, on top of the role's")
+    updated_by: str = Field(..., description="User who changed the access")
+
+
+class ChangeRequestedEvent(BaseEvent):
+    """A change outside the person's folders was held for approval instead of saved."""
+    type: EventType = EventType.CHANGE_REQUESTED
+    request_id: str = Field(..., description="Change request id")
+    path: str = Field(..., description="File the change is to")
+    content: Optional[str] = Field(default=None, description="New content; None deletes the file")
+    base_version: Optional[int] = Field(default=None, description="Version the change was based on")
+    requested_by: str = Field(..., description="Person the change is for")
+    via: str = Field("person", description="person (their own edit) or agent (the coder, for them)")
+    task_id: Optional[str] = Field(default=None, description="Plan task the agent was on, for agent changes")
+    approvers: List[str] = Field(default_factory=list, description="Who could approve it when it was made")
+
+
+class ChangeRequestDecidedEvent(BaseEvent):
+    """A change request was approved, rejected, withdrawn or found stale."""
+    type: EventType = EventType.CHANGE_REQUEST_DECIDED
+    request_id: str = Field(..., description="Change request id")
+    status: str = Field(..., description="approved, rejected, withdrawn or stale")
+    decided_by: str = Field(..., description="Who decided")
 
 
 class RoomInviteCreatedEvent(BaseEvent):
@@ -689,6 +730,10 @@ Event = Union[
     RoomLeftEvent,
     RoomClosedEvent,
     RoomSharingUpdatedEvent,
+    CoderRolesUpdatedEvent,
+    MemberAccessUpdatedEvent,
+    ChangeRequestedEvent,
+    ChangeRequestDecidedEvent,
     RoomInviteCreatedEvent,
     RoomInviteRevokedEvent,
     RoomPasswordSetEvent,
@@ -753,6 +798,10 @@ __all__ = [
     "RoomLeftEvent",
     "RoomClosedEvent",
     "RoomSharingUpdatedEvent",
+    "CoderRolesUpdatedEvent",
+    "MemberAccessUpdatedEvent",
+    "ChangeRequestedEvent",
+    "ChangeRequestDecidedEvent",
     "RoomInviteCreatedEvent",
     "RoomInviteRevokedEvent",
     "RoomPasswordSetEvent",

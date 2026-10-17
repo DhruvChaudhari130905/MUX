@@ -60,7 +60,7 @@ mux/
 │       ├── files/               Content-addressed store, manifests, repo map
 │       ├── checkpoints/         Checkpoint per task, rewind
 │       ├── memory/              Rolling task log, day log, pinned facts
-│       ├── sandbox/             Nebius Sandboxes wrapper, runner, error trimming
+│       ├── sandbox/             Docker and Nebius sandbox clients, runner, error trimming
 │       ├── integrations/        Tavily, GitHub
 │       ├── events/              Pydantic event models, Postgres log, fan-out bus
 │       ├── db/                  Engine, tables

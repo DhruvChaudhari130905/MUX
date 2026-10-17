@@ -1,5 +1,5 @@
 // Turns live room events into notifications (see notifications.ts)
-import type { AppEvent, PlanItem, User } from '@/types';
+import type { AppEvent, ChangeRequest, PlanItem, User } from '@/types';
 import { notify } from './notifications';
 
 export interface RoomNotifyContext {
@@ -7,6 +7,7 @@ export interface RoomNotifyContext {
   currentUser: User;
   nameOf: (userId: string) => string;
   planItem: (id: string) => PlanItem | undefined;
+  changeRequest?: (id: string) => ChangeRequest | undefined;
   focusSidePanel?: () => void;
 }
 
@@ -68,6 +69,32 @@ export function notifyForEvent(event: AppEvent, ctx: RoomNotifyContext) {
         onClick: ctx.focusSidePanel,
       });
       return;
+
+    case 'change.requested': {
+      const req = event.payload;
+      if (req.requested_by === currentUser.id || !req.approvers.includes(currentUser.id)) return;
+      notify({
+        category: 'decisions',
+        title: `${ctx.nameOf(req.requested_by)} needs your approval`,
+        body: `${req.via === 'agent' ? 'The agent wants to' : 'Wants to'} ${req.content === null ? 'delete' : 'change'} ${req.path}`,
+        onClick: ctx.focusSidePanel,
+      });
+      return;
+    }
+
+    case 'change.decided': {
+      const req = ctx.changeRequest?.(event.payload.id);
+      const { status, decided_by } = event.payload;
+      if (!req || req.requested_by !== currentUser.id || status === 'withdrawn') return;
+      notify(
+        status === 'approved'
+          ? { category: 'decisions', tone: 'ok', title: 'Change approved', body: `${ctx.nameOf(decided_by)} approved ${req.path}` }
+          : status === 'stale'
+            ? { category: 'decisions', tone: 'err', title: 'Change not applied', body: `${req.path} changed before it was approved. Redo your change.` }
+            : { category: 'decisions', tone: 'err', title: 'Change rejected', body: `${ctx.nameOf(decided_by)} rejected ${req.path}` },
+      );
+      return;
+    }
 
     case 'conflict.closed':
       notify({ category: 'decisions', tone: 'ok', title: 'Vote closed', body: clip(event.payload.result) });

@@ -1,4 +1,4 @@
-"""Settings loaded from environment variables (Token Factory, Nebius Sandboxes, Tavily, Supabase, GitHub, Postgres)."""
+"""Settings loaded from environment variables (Token Factory, the sandbox, Tavily, Supabase, GitHub, Postgres)."""
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,10 +18,12 @@ class Settings(BaseSettings):
     model_super: str = ""
     model_ultra: str = ""
 
-    # Nebius Sandboxes
+    # Sandbox for the coder's builds and tests: "docker" (this machine), "nebius" (Token Factory
+    # Sandboxes, needs the key and URL below) or "none"
+    sandbox_provider: str = "docker"
+    sandbox_image: str = ""  # empty: mux-sandbox for Docker
     sandbox_api_key: str = ""
     sandbox_base_url: str = ""
-    sandbox_image: str = ""
 
     # Tavily
     tavily_api_key: str = ""

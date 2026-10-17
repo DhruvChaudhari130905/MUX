@@ -22,6 +22,8 @@ import { starterProjectFiles } from '@/lib/starterProject';
 import { getSocket } from '@/lib/socket';
 import { notifyForEvent } from '@/lib/roomNotifications';
 import { NotificationToasts } from '@/components/room/Notifications';
+import { notify } from '@/lib/notifications';
+import { needsApproval } from '@/lib/fileAccess';
 import { reduce } from '@/lib/reducer';
 import { supabase, getUser, loginHref } from '@/lib/supabase';
 import type { RoomState, Room, User, Message, MessageTo, PlanItem, Conflict, Question, Checkpoint, Membership } from '@/types';
@@ -36,6 +38,8 @@ export default function RoomPage() {
   const [state, setState] = useState<RoomState | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentUserMembership, setCurrentUserMembership] = useState<Membership | null>(null);
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
   const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
   // Side columns can be collapsed to give Preview/Code more room; remembered per browser
   const [panels, setPanels] = useState({ feed: true, side: true, timeline: true });
@@ -230,7 +234,7 @@ export default function RoomPage() {
       // only, and the coordinator and coder never saw it). No base version: it replaces the empty room's files.
       const saves = imported.files.map(f =>
         api.saveFile(roomId, f.path, f.content, null)
-          .then(({ version }) => writeLocal([{ path: f.path, content: f.content, version }]))
+          .then(({ version, held }) => (held ? restoreHeld(f.path) : writeLocal([{ path: f.path, content: f.content, version: version ?? 0 }])))
           .catch(error => console.error(`Could not save ${f.path} to the room:`, error)),
       );
       // "Plan it with me": start once the agents can read every file
@@ -313,23 +317,51 @@ export default function RoomPage() {
     });
   }, []);
 
+  // A change outside your folders went for approval (lib/fileAccess.ts): say so, and show the room's copy again
+  const restoreHeld = useCallback(async (path: string) => {
+    notify({
+      category: 'decisions',
+      title: 'Sent for approval',
+      body: `${path} is outside your folders. The owner or a coder of that area will approve or reject it.`,
+    });
+    // The local copy was written ahead of the server, so the room state (file.changed events) has the real version
+    const files = stateRef.current?.files;
+    const entry = files instanceof Map ? files.get(path) : (files as Record<string, { version: number }> | undefined)?.[path];
+    if (!entry) {
+      syncedVersions.current.versions.delete(path);
+      removeLocal([path]);
+      return;
+    }
+    try {
+      writeLocal([{ path, content: (await api.readFile(roomId, path)).content, version: entry.version }]);
+    } catch (error) {
+      console.error(`Could not reload ${path}:`, error);
+    }
+  }, [roomId, writeLocal, removeLocal]);
+
   const handleFileSave = useCallback(async (path: string, content: string, baseVersion: number) => {
     if (!roomId) return;
     try {
-      await api.saveFile(roomId, path, content, baseVersion);
+      const { held } = await api.saveFile(roomId, path, content, baseVersion);
+      if (held) {
+        await restoreHeld(path);
+        return;
+      }
       writeLocal([{ path, content, version: baseVersion + 1 }]);
     } catch (error) {
       console.error('Failed to save file:', error);
       alert('Failed to save file. Version may have changed.');
       throw error; // keep the unsaved draft in the editor
     }
-  }, [roomId, writeLocal]);
+  }, [roomId, writeLocal, restoreHeld]);
 
   const handleCreateFile = useCallback((path: string, content = starterContent(path), open = true) => {
     writeLocal([{ path, content, version: 1 }]);
     if (open) setActiveFile(path);
-    api.saveFile(roomId, path, content, 0).catch(error => console.error('Failed to create file:', error));
-  }, [roomId, writeLocal]);
+    api.saveFile(roomId, path, content, 0)
+      .then(({ held }) => { if (held) void restoreHeld(path); })
+      .catch(error => console.error('Failed to create file:', error));
+  }, [roomId, writeLocal, restoreHeld]);
 
   const handleUploadFiles = useCallback((uploaded: { path: string; content: string }[]) => {
     if (!uploaded.length) return;
@@ -339,33 +371,60 @@ export default function RoomPage() {
     // the server refuses it for every file that already exists). Keep the version the server assigns.
     uploaded.forEach(f =>
       api.saveFile(roomId, f.path, f.content, null)
-        .then(({ version }) => writeLocal([{ ...f, version }]))
+        .then(({ version, held }) => (held ? restoreHeld(f.path) : writeLocal([{ ...f, version: version ?? 0 }])))
         .catch(error => console.error(`Could not save ${f.path} to the room:`, error)),
     );
-  }, [roomId, writeLocal]);
+  }, [roomId, writeLocal, restoreHeld]);
 
   const handleDeleteFile = useCallback((path: string, isDirectory: boolean) => {
     const targets = isDirectory
       ? Array.from(filesRef.current.keys()).filter(p => p.startsWith(path + '/'))
       : [path];
     removeLocal(targets);
-    targets.forEach(p => api.deleteFile(roomId, p).catch(error => console.error('Failed to delete file:', error)));
-  }, [roomId, removeLocal]);
+    targets.forEach(p => api.deleteFile(roomId, p)
+      .then(result => { if (result?.held) void restoreHeld(p); })
+      .catch(error => console.error('Failed to delete file:', error)));
+  }, [roomId, removeLocal, restoreHeld]);
 
   const handleRenameFile = useCallback((from: string, to: string, isDirectory: boolean) => {
     const moves = (isDirectory
       ? Array.from(filesRef.current.keys()).filter(p => p.startsWith(from + '/'))
       : [from]
     ).map(oldPath => ({ oldPath, newPath: to + oldPath.slice(from.length), content: filesRef.current.get(oldPath)?.content ?? '' }));
+    // An approval covers one file, so a rename outside your folders would become a "create" and a "delete"
+    // decided separately (leaving copies behind). Ask instead.
+    const live = stateRef.current?.room;
+    const me = currentUserRef.current?.id;
+    if (live && me && moves.some(m => needsApproval(live, me, m.oldPath) || needsApproval(live, me, m.newPath))) {
+      notify({
+        category: 'decisions',
+        tone: 'err',
+        title: 'Rename needs the owner',
+        body: `${from} or ${to} is outside your folders. Ask the owner or a coder of that area to rename it.`,
+      });
+      return;
+    }
     writeLocal(moves.map(m => ({ path: m.newPath, content: m.content, version: 1 })));
     removeLocal(moves.map(m => m.oldPath));
     setActiveFile(current => moves.find(m => m.oldPath === current)?.newPath ?? current);
+    // A rename is "save the new path, then delete the old one": if either half went for approval, the old
+    // file must stay (deleting it after a held save would lose the file)
     moves.forEach(m =>
       api.saveFile(roomId, m.newPath, m.content, 0)
-        .then(() => api.deleteFile(roomId, m.oldPath))
+        .then(async ({ held }) => {
+          if (held) {  // the folders changed after the check above: keep the old file
+            await restoreHeld(m.newPath);
+            const files = stateRef.current?.files;
+            const entry = files instanceof Map ? files.get(m.oldPath) : undefined;
+            if (entry) writeLocal([{ path: m.oldPath, content: m.content, version: entry.version }]);
+            return;
+          }
+          const removed = await api.deleteFile(roomId, m.oldPath);
+          if (removed?.held) await restoreHeld(m.oldPath);
+        })
         .catch(error => console.error('Failed to rename file:', error)),
     );
-  }, [roomId, writeLocal, removeLocal]);
+  }, [roomId, writeLocal, removeLocal, restoreHeld]);
 
   const handleVote = useCallback(async (conflictId: string, option: string) => {
     if (!roomId) return;
@@ -422,6 +481,17 @@ export default function RoomPage() {
     }
   }, [roomId]);
 
+  const handlePlanRun = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      const { retried } = await api.runPlan(roomId);
+      if (!retried) alert('Nothing to run: the stopped tasks are waiting for an answer in Decisions.');
+    } catch (error) {
+      console.error('Failed to run plan:', error);
+      alert(`Could not run the plan: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId]);
+
   const handleRewind = useCallback(async (checkpointId: string) => {
     if (!roomId) return;
     try {
@@ -445,10 +515,12 @@ export default function RoomPage() {
         currentUser,
         nameOf: id => room.members.find(m => m.user_id === id)?.user?.name ?? (id ? id.charAt(0).toUpperCase() + id.slice(1) : 'Someone'),
         planItem: id => stateRef.current?.plan.find(p => p.id === id),
+        changeRequest: id => stateRef.current?.room.change_requests?.find(r => r.id === id),
+        focusSidePanel: () => togglePanel('side', true),
       });
     });
     return () => { unsubscribe(); };
-  }, [room, currentUser]);
+  }, [room, currentUser, togglePanel]);
 
   const handleReturnToLatest = useCallback(() => {
     setIsRewound(false);
@@ -483,6 +555,8 @@ export default function RoomPage() {
 
   const openConflicts = state.conflicts.filter(c => c.status === 'open' || c.status === 'voting');
   const openQuestions = state.questions.filter(q => q.status === 'open');
+  const myChanges = (state.room.change_requests ?? [])
+    .filter(r => r.status === 'pending' && (r.approvers.includes(currentUser.id) || r.requested_by === currentUser.id));
 
   const presenceData = state.presence.map(p => ({
     user: p.user,
@@ -543,16 +617,19 @@ export default function RoomPage() {
             fileVersions={fileVersions}
             lockedFiles={lockedFiles}
             lockingUser={lockingUser}
+            needsApproval={(path, isDirectory) => needsApproval(state.room, currentUser.id, path, isDirectory)}
           />
 
           {/* Right: Cards + Plan */}
           {!panels.side && (
-            <PanelRail side="right" label="Decisions & plan" badge={openConflicts.length + openQuestions.length} onOpen={() => togglePanel('side', true)} />
+            <PanelRail side="right" label="Decisions & plan" badge={openConflicts.length + openQuestions.length + myChanges.length} onOpen={() => togglePanel('side', true)} />
           )}
           <SidePanel
             collapsed={!panels.side}
             onCollapse={() => togglePanel('side', false)}
             state={state}
+            roomId={roomId}
+            nameOf={id => room.members.find(m => m.user_id === id)?.user?.name ?? id}
             currentUserRole={currentUserMembership.permission}
             currentUserDomainRole={currentUserMembership.domain_role}
             onVote={handleVote}
@@ -560,6 +637,7 @@ export default function RoomPage() {
             onAnswer={handleAnswer}
             onPlanUpdate={handlePlanUpdate}
             onPlanApprove={handlePlanApprove}
+            onPlanRun={handlePlanRun}
             onKickoff={handleKickoff}
           />
         </main>

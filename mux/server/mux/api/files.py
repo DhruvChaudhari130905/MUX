@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from mux.files.room_files import InvalidPath, check_path
 from mux.api.deps import get_room_actor_dep, get_current_user, require_editor, require_owner, require_viewer, User
 from mux.rooms.actor import RoomActor
 
@@ -124,6 +125,15 @@ async def create_file(
     Requires editor permission.
     """
     path = request.path.lstrip("/")
+    try:
+        check_path(path)
+    except InvalidPath:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not a file path in the project: {path}")
+    if not actor.can_change(current_user.id, path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Outside your folders: save it from the room's editor to send it for approval",
+        )
     if path in actor.manifest:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -249,6 +259,15 @@ async def update_file(
     Note: If file is locked by another user, this will fail.
     """
     path = file_path.lstrip("/")
+    try:
+        check_path(path)
+    except InvalidPath:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not a file path in the project: {path}")
+    if not actor.can_change(current_user.id, path):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Outside your folders: save it from the room's editor to send it for approval",
+        )
 
     # Check if locked by another user
     if await actor.is_locked(path):

@@ -214,3 +214,32 @@ async def test_the_servers_key_is_hidden_too(monkeypatch):
     with pytest.raises(ModelError) as caught:
         await RoomLLM(room(None), LeakyDefault()).chat(ModelRole.SUPER, [])  # type: ignore[arg-type]
     assert "tf-server-key" not in str(caught.value)
+
+
+@pytest.mark.parametrize("code,words,stuck", [
+    (402, "out of credit (402)", True),
+    (401, "refused the API key (401)", True),
+    (404, "wasn't found (404)", True),
+    (429, "rate limiting this room (429)", False),
+])
+async def test_provider_errors_become_plain_words(secrets_key, code, words, stuck):
+    import httpx2 as httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(code, json={"detail": "Payment Required: You have exhausted your budget."})
+
+    default = OpenAILLM("https://provider.example/v1", "sk-server", {r: "m" for r in ModelRole},
+                        transport=httpx.MockTransport(handler), max_retries=0)
+    with pytest.raises(ModelError) as e:
+        await RoomLLM(room(None), default).chat(ModelRole.SUPER, [{"role": "user", "content": "hi"}])
+    assert words in str(e.value) and e.value.stuck is stuck
+
+
+async def test_other_errors_keep_the_provider_text_and_are_not_stuck(secrets_key):
+    class Broken:
+        async def chat(self, *a: Any, **kw: Any) -> LLMReply:
+            raise RuntimeError("connection reset")
+
+    with pytest.raises(ModelError) as e:
+        await RoomLLM(room(None), Broken()).chat(ModelRole.SUPER, [])
+    assert str(e.value) == "RuntimeError: connection reset" and not e.value.stuck

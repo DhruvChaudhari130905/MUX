@@ -28,6 +28,19 @@ def _no_legacy_secret_settings(monkeypatch):
     monkeypatch.setattr(settings, "mcp_allow_private_urls", False)
 
 
+@pytest.fixture(autouse=True)
+def _no_sandbox(monkeypatch):
+    """App startup never reaches the real Docker or Nebius: tests that build pass their own fake runner."""
+    monkeypatch.setattr(settings, "sandbox_provider", "none")
+
+
+@pytest.fixture(autouse=True)
+def _env_file_in_tmp(tmp_path, monkeypatch):
+    """Server startup may write a new ROOM_SECRETS_KEY to .env: never the real one in tests."""
+    import mux.secrets
+    monkeypatch.setattr(mux.secrets, "ENV_FILE", tmp_path / ".env")
+
+
 def check_test_database_url(url: str, database_url: str) -> str:
     """Return `url` only if it is safe to wipe: a database whose name contains "test", not DATABASE_URL.
 

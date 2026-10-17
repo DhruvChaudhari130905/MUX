@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight, File, FileCode2, FileJson, FileText, FileImage, Palette, Globe, Folder, FolderOpen,
-  FilePlus, FolderPlus, FolderInput, Upload, Pencil, Trash2, Download, Search, ChevronsDownUp, Lock, X,
+  FilePlus, FolderPlus, FolderInput, Upload, Pencil, Trash2, Download, Search, ChevronsDownUp, Lock, LockKeyhole, X,
 } from 'lucide-react';
 import { isProjectDrop } from '@/lib/projectImport';
 import { BINARY_ASSET, bytesToDataUrl, dataUrlToBytes, isBinaryContent, maxBytesFor, mimeFor } from '@/lib/binaryFiles';
@@ -124,7 +124,11 @@ interface FileTreeProps {
   // Whole-project import (button, or a folder/.zip dropped on the tree)
   onImport?: () => void;
   onImportDrop?: (items: DataTransferItemList) => void;
+  // Outside your folders: changes there go for approval (lib/fileAccess.ts)
+  needsApproval?: (path: string, isDirectory: boolean) => boolean;
 }
+
+const APPROVAL_HINT = 'Outside your folders: changes here need approval';
 
 export function FileTree({
   files,
@@ -140,6 +144,7 @@ export function FileTree({
   createRequest,
   onImport,
   onImportDrop,
+  needsApproval,
 }: FileTreeProps) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['src', 'src/components']));
   const [extraFolders, setExtraFolders] = useState<Set<string>>(new Set()); // empty folders created in the UI
@@ -354,6 +359,7 @@ export function FileTree({
             <ChevronRight className={`h-3.5 w-3.5 flex-none transition-transform duration-200 ${isOpen ? 'rotate-90' : ''}`} />
             {isOpen ? <FolderOpen className="h-4 w-4 flex-none text-[var(--coder)]" /> : <Folder className="h-4 w-4 flex-none text-[var(--coder)]" />}
             <span className="truncate text-[var(--ink)]">{node.name}</span>
+            {needsApproval?.(node.path, true) && <span title={APPROVAL_HINT}><LockKeyhole className="h-3 w-3 flex-none text-[var(--faint)]" /></span>}
             {confirmBar || (
               <span className="row-actions ml-auto flex items-center gap-0.5">
                 {actionBtn('New file here', <FilePlus className="h-3.5 w-3.5" />, () => startCreate('new-file', node.path))}
@@ -395,6 +401,7 @@ export function FileTree({
         <FileIcon name={node.name} className="h-4 w-4 flex-none" />
         <span className={`truncate ${isActive ? 'text-[var(--ink)]' : ''}`}>{node.name}</span>
         {isLocked && <span title={`Locked by ${lockingUser.get(node.path)}`}><Lock className="h-3 w-3 flex-none text-[var(--ask)]" /></span>}
+        {!isLocked && needsApproval?.(node.path, false) && <span title={APPROVAL_HINT}><LockKeyhole className="h-3 w-3 flex-none text-[var(--faint)]" /></span>}
         {confirmBar || (
           <>
             <span className="row-meta ml-auto flex items-center gap-1">

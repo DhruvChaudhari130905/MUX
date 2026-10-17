@@ -24,6 +24,24 @@ export interface Membership {
   permission: UserRole;
   domain_role: DomainRole;
   user: User;
+  // Coder role and folders of their own (lib/fileAccess.ts); neither: no folder limits
+  coder_role?: string | null;
+  folders?: string[];
+}
+
+// A change outside the person's folders, waiting for the owner or a coder of that area
+export interface ChangeRequest {
+  id: string;
+  path: string;
+  content: string | null; // null: delete the file
+  base_version: number | null;
+  requested_by: string;
+  via: 'person' | 'agent';
+  task_id: string | null;
+  status: 'pending' | 'approved' | 'rejected' | 'withdrawn' | 'stale';
+  decided_by: string | null;
+  created_at: string;
+  approvers: string[];
 }
 
 export interface Room {
@@ -41,6 +59,8 @@ export interface Room {
   created_at: string;
   updated_at?: string;
   members: Membership[];
+  coder_roles?: Record<string, string[]>; // role name -> folders
+  change_requests?: ChangeRequest[]; // pending, plus recent rejected/stale ones (their requester can copy the edit)
 }
 
 // A pending email invite (owner only)
@@ -133,6 +153,8 @@ export interface PlanItem {
   merged_notes?: string[];
   // 'review': a read-only task that posts a written review instead of changing files
   kind?: 'review';
+  // People whose requests shaped the task: the agent's edits must suit their folders (set by the server)
+  requested_by?: string[];
 }
 
 export interface Message {
@@ -268,6 +290,10 @@ export type EventType =
   | 'member.joined'
   | 'member.role_changed'
   | 'sharing.changed'
+  | 'access.roles_changed'
+  | 'access.member_changed'
+  | 'change.requested'
+  | 'change.decided'
   | 'mcp.changed'
   | 'mcp.unavailable'
   | 'ai.changed'
@@ -486,8 +512,32 @@ export interface GenericEvent extends BaseEvent {
   payload: any;
 }
 
+export interface AccessRolesChangedEvent extends BaseEvent {
+  type: 'access.roles_changed';
+  payload: { coder_roles: Record<string, string[]> };
+}
+
+export interface AccessMemberChangedEvent extends BaseEvent {
+  type: 'access.member_changed';
+  payload: { user_id: string; coder_role: string | null; folders: string[] };
+}
+
+export interface ChangeRequestedEvent extends BaseEvent {
+  type: 'change.requested';
+  payload: ChangeRequest;
+}
+
+export interface ChangeDecidedEvent extends BaseEvent {
+  type: 'change.decided';
+  payload: { id: string; status: ChangeRequest['status']; decided_by: string };
+}
+
 export type AppEvent =
   | GenericEvent
+  | AccessRolesChangedEvent
+  | AccessMemberChangedEvent
+  | ChangeRequestedEvent
+  | ChangeDecidedEvent
   | MessagePostedEvent
   | MessageLabeledEvent
   | MessageReactedEvent

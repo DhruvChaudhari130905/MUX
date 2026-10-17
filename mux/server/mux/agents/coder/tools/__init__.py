@@ -228,8 +228,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 class CoderToolExecutor:
     """Dispatch model tool calls to coder tools. Tool errors come back as {"ok": False, "error": ...}.
 
-    Production passes `RoomFileTools` and a sandbox `runner`: builds and tests then run in the Nebius
-    sandbox on the room's live manifest (Q51). Local npm runs only when `build_root` is given explicitly,
+    Production passes the room's files (`ActorFileTools` or `RoomFileTools`) and a sandbox `runner`:
+    builds and tests then run in the sandbox (Docker or Nebius) on the room's current files (Q51). Local npm runs only when `build_root` is given explicitly,
     for development on a laptop; with neither, run_build and run_tests return an error.
     """
 
@@ -247,8 +247,8 @@ class CoderToolExecutor:
         review_scope: list[str] | None = None,
         skills: dict[str, Skill] | None = None,
     ) -> None:
-        if runner is not None and not isinstance(files, RoomFileTools):
-            raise TypeError("a sandbox runner builds the room's files, so it needs RoomFileTools")
+        if runner is not None and not isinstance(files, (RoomFileTools, ActorFileTools)):
+            raise TypeError("a sandbox runner builds the room's files, so it needs RoomFileTools or ActorFileTools")
         self.files = files
         self.runner = runner
         self.build_root = build_root
@@ -348,10 +348,23 @@ class CoderToolExecutor:
             return schemas
         return [s for s in schemas if s["function"]["name"] not in ("run_build", "run_tests")]
 
+    async def _room_files(self) -> dict[str, bytes]:
+        """Every room file as stored (binary files stay data URLs; the runner decodes them)."""
+        if isinstance(self.files, RoomFileTools):
+            rf = self.files.files
+            return {p: (await rf.read(p))[0] for p in rf.live.manifest}
+        assert isinstance(self.files, ActorFileTools)
+        actor = self.files.actor
+        out: dict[str, bytes] = {}
+        for p in await actor.list_files():
+            content = await actor.get_file(p)
+            if content is not None:
+                out[p] = content.encode("utf-8")
+        return out
+
     async def _run_build(self) -> dict[str, Any]:
         if self.runner is not None:
-            assert isinstance(self.files, RoomFileTools)
-            res = await self.runner.build(self.files.files.manifest)
+            res = await self.runner.build_files(await self._room_files())
             self.snapshot_uuid = res.snapshot_uuid
             return {"ok": res.passed, "passed": res.passed, "operation": "build", "errors": res.errors,
                     "duration_s": res.duration_s}
@@ -362,8 +375,7 @@ class CoderToolExecutor:
 
     async def _run_tests(self, pattern: str | None = None) -> dict[str, Any]:
         if self.runner is not None:
-            assert isinstance(self.files, RoomFileTools)
-            res = await self.runner.test(self.files.files.manifest, pattern)
+            res = await self.runner.test_files(await self._room_files(), pattern)
             return {"ok": res.passed, "passed": res.passed, "operation": "tests", "errors": res.failures,
                     "passed_count": res.passed_count, "failed_count": res.failed_count}
         if self.build_root is None:

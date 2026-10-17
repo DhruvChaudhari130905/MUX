@@ -1,9 +1,11 @@
 // API client for REST commands
-import type { PlanName, UserPlan, AiRole, Invite, InviteResult, McpToolSetting, RoomAi, RoomMcp, RoomSkill, Room, Message, MessageTo, PlanItem, Conflict, Question, Budget, Checkpoint, User, Membership } from '@/types';
+import type { ChangeRequest, PlanName, UserPlan, AiRole, Invite, InviteResult, McpToolSetting, RoomAi, RoomMcp, RoomSkill, Room, Message, MessageTo, PlanItem, Conflict, Question, Budget, Checkpoint, User, Membership } from '@/types';
 
 import { createDemoRoom, deleteDemoRoom, demoMessageEvent, demoPlan, getDemoRoom, isDemoMode, listDemoRooms, nextDemoSeq, setDemoPlan } from './demo';
 import { getSocket } from './socket';
 import { getAccessToken } from './supabase';
+
+export type FileSaveResult = { accepted: true; seq: number; version: number | null; held?: boolean; request_id?: string | null };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -32,9 +34,12 @@ async function demoFetch<T>(path: string, options: RequestInit): Promise<T> {
     getSocket(roomMatch[1]).injectEvent(demoMessageEvent(roomMatch[1], body.text, body.to));
   }
   if (roomMatch && roomMatch[2]?.startsWith('/skills')) return [] as T;
+  if (roomMatch && roomMatch[2] === '/ai/models') return { models: [] } as T;
   if (roomMatch && roomMatch[2] === '/ai') return { source: 'server', provider: null, base_url: null, models: null, has_key: false } as T;
   if (roomMatch && roomMatch[2]?.startsWith('/mcp')) return { admin: [], servers: [] } as T;
   if (roomMatch && roomMatch[2] === '/kickoff') return { accepted: true } as T;
+  if (roomMatch && roomMatch[2] === '/plan/run') return { accepted: true, retried: 0 } as T;
+  if (roomMatch && roomMatch[2] === '/errors') return { accepted: true, task_id: null } as T;
   if (path === '/github/connect' || path.endsWith('/export')) return { url: 'https://github.com' } as T;
   return { accepted: true, seq: nextDemoSeq(), version: (body.base_version ?? 0) + 1 } as T;
 }
@@ -121,6 +126,9 @@ export const api = {
   getAi: (id: string) => fetchWithAuth<RoomAi>(`/rooms/${id}/ai`),
   setAi: (id: string, data: { provider: string; base_url: string; api_key: string; models: Record<AiRole, string> }) =>
     fetchWithAuth<RoomAi>(`/rooms/${id}/ai`, { method: 'PUT', body: JSON.stringify(data) }),
+  // The model ids a key can use at a provider (empty key: the room's saved one)
+  listAiModels: (id: string, data: { base_url: string; api_key: string }) =>
+    fetchWithAuth<{ models: string[] }>(`/rooms/${id}/ai/models`, { method: 'POST', body: JSON.stringify(data) }),
   clearAi: (id: string) => fetchWithAuth<RoomAi>(`/rooms/${id}/ai`, { method: 'DELETE' }),
 
   // Skills the room's coder may use: anyone reads, the owner switches them on
@@ -175,6 +183,15 @@ export const api = {
     }),
   approvePlan: (roomId: string) =>
     fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/approve`, { method: 'POST' }),
+  // "Run plan": the coder retries every task it stopped on. 409 without an AI model
+  runPlan: (roomId: string) =>
+    fetchWithAuth<{ accepted: true; retried: number }>(`/rooms/${roomId}/plan/run`, { method: 'POST' }),
+  // Errors the running app threw: the coder gets a "Fix errors" task (task_id null when one is already open)
+  reportErrors: (roomId: string, errors: string[]) =>
+    fetchWithAuth<{ accepted: true; task_id: string | null }>(`/rooms/${roomId}/errors`, {
+      method: 'POST',
+      body: JSON.stringify({ errors, source: 'preview' }),
+    }),
   // Owner only: "Plan it with me" (read the project, ask the team, draft a plan). 409 without an AI model
   kickoff: (roomId: string) =>
     fetchWithAuth<{ accepted: true }>(`/rooms/${roomId}/kickoff`, { method: 'POST' }),
@@ -198,6 +215,18 @@ export const api = {
       body: JSON.stringify({ answer }),
     }),
 
+  // Coder roles and folder access (owner only), and change requests
+  // renames: old role name -> new one, so its coders keep the role
+  setCoderRoles: (roomId: string, roles: Record<string, string[]>, renames: Record<string, string> = {}) =>
+    fetchWithAuth<Room>(`/rooms/${roomId}/access/roles`, { method: 'PUT', body: JSON.stringify({ roles, renames }) }),
+  setMemberAccess: (roomId: string, userId: string, coderRole: string | null, folders: string[]) =>
+    fetchWithAuth<Room>(`/rooms/${roomId}/members/${encodeURIComponent(userId)}/access`, {
+      method: 'PUT',
+      body: JSON.stringify({ coder_role: coderRole, folders }),
+    }),
+  decideChange: (roomId: string, requestId: string, action: 'approve' | 'reject' | 'withdraw') =>
+    fetchWithAuth<ChangeRequest>(`/rooms/${roomId}/change-requests/${requestId}/${action}`, { method: 'POST' }),
+
   // Files
   lockFile: (roomId: string, path: string) =>
     fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/files/lock`, {
@@ -213,16 +242,17 @@ export const api = {
     fetchWithAuth<{ path: string; content: string }>(
       `/api/files/${roomId}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
     ),
-  // baseVersion: the version the edit started from (0 for a new file); null overwrites whatever is there
+  // baseVersion: the version the edit started from (0 for a new file); null overwrites whatever is there.
+  // held: outside your folders, so it went for approval as change request request_id (version is then null)
   saveFile: (roomId: string, path: string, content: string, baseVersion: number | null) =>
-    fetchWithAuth<{ accepted: true; seq: number; version: number }>(`/rooms/${roomId}/files`, {
+    fetchWithAuth<FileSaveResult>(`/rooms/${roomId}/files`, {
       method: 'PUT',
       body: JSON.stringify({ path, content, base_version: baseVersion }),
     }),
 
   // A file that only exists in this browser (never saved to the room) is already gone on the server
   deleteFile: (roomId: string, path: string) =>
-    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
+    fetchWithAuth<{ accepted: true; seq: number; held?: boolean; request_id?: string | null }>(`/rooms/${roomId}/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' })
       .catch(error => {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;

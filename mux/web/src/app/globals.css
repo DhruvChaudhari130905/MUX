@@ -837,7 +837,7 @@ h1, h2, h3 { text-wrap: balance; }
 /* ───────────── Room workspace: refinement layer ─────────────
    Same structure and behaviour as before; this layer only adjusts surfaces, states and motion. */
 
-/* Top bar: glass surface with a slow light travelling along its bottom edge */
+/* Top bar: glass surface */
 /* The blur lives on a pseudo-element: backdrop-filter on the header itself would make it the containing
    block for the fixed-position dialogs it renders (AI model, Tools, Share...) and trap them behind the panels */
 .app .top { position: relative; z-index: 30; background: transparent; }
@@ -845,12 +845,6 @@ h1, h2, h3 { text-wrap: balance; }
   content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background: color-mix(in srgb, var(--panel) 82%, transparent); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
 }
-.app .top::after {
-  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; pointer-events: none;
-  background: linear-gradient(90deg, transparent, var(--coord), var(--coder), #a371f7, transparent) no-repeat;
-  background-size: 40% 100%; animation: edge-run 9s linear infinite; opacity: .8;
-}
-@keyframes edge-run { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .app .brand { font: 700 20px/1 var(--font-display); letter-spacing: -.03em; }
 .app .room .name { font: 600 16px/1.2 var(--font-display); letter-spacing: -.01em; }
 
@@ -953,7 +947,7 @@ h1, h2, h3 { text-wrap: balance; }
 .app .scroll::-webkit-scrollbar-thumb, .app .stage::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--line) 80%, transparent); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
 
 @media (prefers-reduced-motion: reduce) {
-  .app .top::after, .app .av .dot, .typing-dots i, .app .budget .bar i::after, .app .tab[aria-selected="true"]::after,
+  .app .av .dot, .typing-dots i, .app .budget .bar i::after, .app .tab[aria-selected="true"]::after,
   .app .side .card.conflict::before, .app .side .card.ask::before, .app .plan-item.doing::after, .app .banner { animation: none !important; }
   .app .presence .av:hover, .app .side .card:hover, .app .timeline-node:hover .pt { transform: none; }
 }

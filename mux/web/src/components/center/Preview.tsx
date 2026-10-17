@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Sparkles, MessageSquareText, ExternalLink, Maximize2, Minimize2, Play, RotateCw, Wrench } from 'lucide-react';
 import type { PlanItem } from '@/types';
+import { api } from '@/lib/api';
 import { getDemoPreview, isDemoMode, type DemoPreview } from '@/lib/demo';
 import {
   onPreviewState, onServerReady, previewRoomId, pushRoomFiles, runningServers, startPreview, stopPreview, updateRoomFs,
@@ -66,7 +67,7 @@ export function Preview({ files, fs, roomId, title, description, plan }: Preview
   if (project.kind === 'node') return <LiveApp fs={fs} roomId={roomId} script={project.script} packageJson={project.packageJson} />;
   if (serverUrl) return <ServerPreview url={serverUrl} />;
   if (project.kind === 'needs-setup') return <SetupNeeded files={files} fs={fs} title={title} />;
-  if (entryPage) return <StaticPreview files={files} entryPage={entryPage} />;
+  if (entryPage) return <StaticPreview files={files} entryPage={entryPage} roomId={roomId} />;
   return <BlankProject title={title} description={description} plan={plan} fileCount={files.size} />;
 }
 
@@ -243,9 +244,14 @@ function ServerPreview({ url }: { url: string }) {
 }
 
 // The room's HTML rendered in a sandboxed frame (scripts run, but it can't reach the MUX page)
-function StaticPreview({ files, entryPage }: { files: FileMap; entryPage: string }) {
+function StaticPreview({ files, entryPage, roomId }: { files: FileMap; entryPage: string; roomId: string }) {
   const [page, setPage] = useState(entryPage);
   const frame = useRef<HTMLIFrameElement>(null);
+  // Errors the page throws, sent to the room a moment later in one report (the server turns them into a
+  // fix task for the coder). Each error is sent once per version of the page.
+  const pending = useRef<string[]>([]);
+  const reported = useRef(new Set<string>());
+  const flush = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { setPage(entryPage); }, [entryPage]);
 
@@ -253,8 +259,28 @@ function StaticPreview({ files, entryPage }: { files: FileMap; entryPage: string
   const html = useMemo(() => buildStaticPage(files, current), [files, current]);
 
   useEffect(() => {
+    reported.current.clear();
+    pending.current = [];
+  }, [html]);
+
+  useEffect(() => () => { if (flush.current) clearTimeout(flush.current); }, []);
+
+  useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frame.current?.contentWindow) return;
+      const error = (event.data as { muxPreviewError?: unknown })?.muxPreviewError;
+      if (typeof error === 'string') {
+        if (reported.current.has(error)) return;
+        reported.current.add(error);
+        pending.current.push(error);
+        if (flush.current) clearTimeout(flush.current);
+        flush.current = setTimeout(() => {
+          const errors = pending.current.splice(0, 20);
+          // Viewers can't report, and a room without a model can't fix: both are fine to drop
+          if (errors.length) api.reportErrors(roomId, errors).catch(() => {});
+        }, 2000);
+        return;
+      }
       const href = (event.data as { muxPreviewNavigate?: unknown })?.muxPreviewNavigate;
       if (typeof href !== 'string') return;
       const target = resolveRef(files, current, href) ?? resolveRef(files, current, `${href.replace(/\/$/, '')}/index.html`);
@@ -262,7 +288,7 @@ function StaticPreview({ files, entryPage }: { files: FileMap; entryPage: string
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [files, current]);
+  }, [files, current, roomId]);
 
   // Every page is reachable from here, even when the site's own links don't lead to it
   const pages = htmlPages(files);

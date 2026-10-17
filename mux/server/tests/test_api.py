@@ -1021,6 +1021,33 @@ def test_kickoff_needs_the_owner_and_a_model(client):
     assert r.status_code == 409 and "no AI model" in r.json()["detail"]
 
 
+def test_run_plan_needs_an_editor_and_a_model(client, monkeypatch):
+    rid = create_room(client)
+    client.post(f"/rooms/{rid}/members", json={"user_id": "bob", "role": "viewer"}, headers=auth("alice"))
+    assert client.post(f"/rooms/{rid}/plan/run", headers=auth("bob")).status_code == 403
+    r = client.post(f"/rooms/{rid}/plan/run", headers=auth("alice"))
+    assert r.status_code == 409 and "no AI model" in r.json()["detail"]
+    runtime = room_registry.get_registry().runtime(rid)
+    assert runtime is not None
+    monkeypatch.setattr(runtime, "_model_available", lambda: True)
+    assert client.post(f"/rooms/{rid}/plan/run", headers=auth("alice")).json() == {"accepted": True, "retried": 0}
+
+
+def test_preview_errors_become_a_fix_task(client, monkeypatch):
+    rid = create_room(client)
+    client.post(f"/rooms/{rid}/members", json={"user_id": "bob", "role": "viewer"}, headers=auth("alice"))
+    body = {"errors": ["TypeError: x is undefined (app.js:3)"], "source": "preview"}
+    assert client.post(f"/rooms/{rid}/errors", json=body, headers=auth("bob")).status_code == 403
+    r = client.post(f"/rooms/{rid}/errors", json=body, headers=auth("alice"))
+    assert r.status_code == 409 and "no AI model" in r.json()["detail"]
+    runtime = room_registry.get_registry().runtime(rid)
+    assert runtime is not None
+    monkeypatch.setattr(runtime, "_model_available", lambda: True)
+    assert client.post(f"/rooms/{rid}/errors", json={"errors": []}, headers=auth("alice")).status_code == 422
+    r = client.post(f"/rooms/{rid}/errors", json=body, headers=auth("alice"))
+    assert r.status_code == 200 and r.json()["accepted"] is True and r.json()["task_id"]
+
+
 def test_kickoff_is_recorded_and_not_run_twice(client, monkeypatch):
     import asyncio
     rid = create_room(client)
@@ -1094,3 +1121,74 @@ def test_skill_limit(client, skills_dir):
     client.post(f"/rooms/{rid}/skills/reload", headers=auth("alice"))
     names = [f"s{i}" for i in range(30)] + ["frontend-design"]
     assert client.put(f"/rooms/{rid}/skills", json={"enabled": names}, headers=auth("alice")).status_code == 400
+
+
+def test_owner_lists_the_models_their_key_can_use(client, ai_checks, monkeypatch):
+    import mux.api.ai as ai_api
+    keys: list[str] = []
+    answer: dict = {"error": None}
+
+    class Listing:
+        def __init__(self, base_url, api_key, models, **kwargs):
+            keys.append(api_key)
+
+        async def list_models(self):
+            if answer["error"]:
+                raise RuntimeError(answer["error"])
+            return ["fast-1", "smart-1"]
+
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("listing never chats")
+
+    monkeypatch.setattr(ai_api, "OpenAILLM", Listing)
+    rid = create_room(client)
+    body = {"base_url": AI_BODY["base_url"], "api_key": "sk-room-secret"}
+    r = client.post(f"/rooms/{rid}/ai/models", json=body, headers=auth("alice"))
+    assert r.status_code == 200 and r.json() == {"models": ["fast-1", "smart-1"]}
+    # No key typed and none saved; then the saved key is used
+    assert client.post(f"/rooms/{rid}/ai/models", json={**body, "api_key": ""}, headers=auth("alice")).status_code == 400
+    client.put(f"/rooms/{rid}/ai", json=AI_BODY, headers=auth("alice"))
+    assert client.post(f"/rooms/{rid}/ai/models", json={**body, "api_key": ""}, headers=auth("alice")).status_code == 200
+    assert keys[-1] == "sk-room-secret"
+    # Only the owner; refused addresses; provider errors come back without the key
+    client.post(f"/rooms/{rid}/members", json={"user_id": "bob", "role": "editor"}, headers=auth("alice"))
+    assert client.post(f"/rooms/{rid}/ai/models", json=body, headers=auth("bob")).status_code == 403
+    assert client.post(f"/rooms/{rid}/ai/models", json={**body, "base_url": "https://10.0.0.5/v1"},
+                       headers=auth("alice")).status_code == 400
+    answer["error"] = "401 bad key sk-room-secret"
+    r = client.post(f"/rooms/{rid}/ai/models", json=body, headers=auth("alice"))
+    assert r.status_code == 400 and "sk-room-secret" not in r.text and "[hidden]" in r.text
+
+
+async def test_list_models_reads_the_models_endpoint():
+    import httpx2
+
+    from mux.agents.llm import OpenAILLM
+
+    def handler(request):
+        assert request.url.path == "/v1/models" and request.headers["authorization"] == "Bearer k"
+        return httpx2.Response(200, json={"object": "list", "data": [
+            {"id": "b-model", "object": "model", "created": 0, "owned_by": "x"},
+            {"id": "a-model:free", "object": "model", "created": 0, "owned_by": "x"}]})
+
+    llm = OpenAILLM("https://api.example/v1", "k", {}, transport=httpx2.MockTransport(handler))
+    assert await llm.list_models() == ["a-model:free", "b-model"]
+
+
+def test_a_missing_secrets_key_is_made_and_saved(tmp_path, monkeypatch):
+    import mux.secrets as secrets
+    env = tmp_path / ".env"
+    monkeypatch.setattr(secrets, "ENV_FILE", env)
+    monkeypatch.setattr(settings, "room_secrets_key", "")
+    env.write_text("WEB_APP_URL=http://localhost:3000\nROOM_SECRETS_KEY=\nALLOW_PRIVATE_URLS=false")
+    secrets.ensure_secrets_key()
+    key = settings.room_secrets_key
+    assert key and env.read_text() == f"WEB_APP_URL=http://localhost:3000\nROOM_SECRETS_KEY={key}\nALLOW_PRIVATE_URLS=false"
+    assert secrets.decrypt_value(secrets.encrypt_value("sk-x")) == "sk-x"
+    # A key already set is kept, and a file without the line gets one appended
+    secrets.ensure_secrets_key()
+    assert settings.room_secrets_key == key
+    monkeypatch.setattr(settings, "room_secrets_key", "")
+    env.write_text("A=1")
+    secrets.ensure_secrets_key()
+    assert env.read_text() == f"A=1\nROOM_SECRETS_KEY={settings.room_secrets_key}\n"

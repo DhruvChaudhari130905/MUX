@@ -2,7 +2,7 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +17,8 @@ from mux.config import settings
 from mux.events.bus import event_bus
 from mux.rooms.actor import RoomActor
 from mux.rooms.runtime import RoomRuntime
+from mux.sandbox.runner import Runner
+from mux.secrets import ensure_secrets_key
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,6 +38,32 @@ room_registry.get_event_log = get_event_log
 STARTER_TEMPLATE = Path(__file__).resolve().parents[2] / "templates" / "fullstack-starter"
 
 
+def sandbox_runner() -> Optional[Runner]:
+    """The sandbox for the coder's builds and tests (SANDBOX_PROVIDER), or None when it can't run: the
+    coder is then told to check its work by re-reading instead."""
+    provider = settings.sandbox_provider.strip().lower()
+    if provider == "docker":
+        from mux.sandbox.docker import DockerSandboxClient, image_ready
+
+        image = settings.sandbox_image or "mux-sandbox"
+        if problem := image_ready(image):
+            logger.warning("Docker sandbox is off: %s. The coder can't run builds or tests", problem)
+            return None
+        logger.info("Builds and tests run in Docker (image %s)", image)
+        return Runner(DockerSandboxClient(), image=image)
+    if provider == "nebius":
+        if not (settings.sandbox_api_key and settings.sandbox_base_url and settings.sandbox_image):
+            logger.warning("Nebius sandbox needs SANDBOX_API_KEY, SANDBOX_BASE_URL and SANDBOX_IMAGE: builds are off")
+            return None
+        from mux.sandbox.client import TokenFactorySandboxClient
+
+        return Runner(TokenFactorySandboxClient(settings.sandbox_api_key, settings.sandbox_base_url),
+                      image=settings.sandbox_image)
+    if provider != "none":
+        logger.warning("Unknown SANDBOX_PROVIDER %r (docker, nebius or none): builds are off", provider)
+    return None
+
+
 def agent_runtime_factory() -> Callable[[RoomActor], RoomRuntime]:
     """The room agents. Each room uses its owner's AI provider, else Token Factory when configured; a room
     with neither has its agents off (RoomLLM.available() is False)."""
@@ -50,10 +78,11 @@ def agent_runtime_factory() -> Callable[[RoomActor], RoomRuntime]:
     else:
         logger.warning("Token Factory is not configured (TOKEN_FACTORY_* / MODEL_SUPER): only rooms with their own AI key run agents")
     conventions = load_conventions(STARTER_TEMPLATE)
+    runner = sandbox_runner()
 
     def make(actor: RoomActor) -> RoomRuntime:
         search = TavilySearch() if settings.tavily_api_key else None  # one per room: the cache is per room
-        return RoomRuntime(actor, RoomLLM(actor, default), search=search, conventions=conventions,
+        return RoomRuntime(actor, RoomLLM(actor, default), search=search, runner=runner, conventions=conventions,
                            publish=event_bus.publish_json)
 
     return make
@@ -62,6 +91,7 @@ def agent_runtime_factory() -> Callable[[RoomActor], RoomRuntime]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting MUX server...")
+    ensure_secrets_key()
     await dbsession.init_db()
     logger.info("Database initialized")
 

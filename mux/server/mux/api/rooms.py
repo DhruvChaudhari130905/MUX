@@ -11,11 +11,12 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from mux.api.account import owned_room_actors
 from mux.plans import get_plan
@@ -26,6 +27,8 @@ from mux.integrations.github import get_github_integration
 from mux.integrations.invite_email import room_link, send_invite_email
 from mux.rooms.access import hash_password, password_attempts, verify_password
 from mux.rooms.actor import PathConflictError, RoomActor
+from mux.rooms.file_access import ChangeHeld, ChangeRequest
+from mux.files.room_files import InvalidPath, check_path
 from mux.rooms.registry import get_registry
 from mux.rooms.uploads import MAX_ATTACHMENTS, room_uploads
 
@@ -113,6 +116,16 @@ class RoomCloseResponse(BaseModel):
     reason: Optional[str]
 
 
+class CoderRolesRequest(BaseModel):
+    roles: dict[str, list[str]]  # role name -> folders
+    renames: dict[str, str] = Field(default_factory=dict)  # old role name -> new one, so members keep their role
+
+
+class MemberAccessRequest(BaseModel):
+    coder_role: Optional[str] = None
+    folders: list[str] = Field(default_factory=list)
+
+
 class MemberAddRequest(BaseModel):
     """Request to grant a user membership in a room (owner only)."""
     user_id: str = Field(..., min_length=1, max_length=200, description="User to add")
@@ -196,6 +209,12 @@ class PlanUpdateRequest(BaseModel):
     items: list[dict] = Field(..., description="Plan items")
 
 
+class ErrorReport(BaseModel):
+    """`POST /rooms/{id}/errors`: errors seen while the app runs, for the coder to fix."""
+    errors: list[Annotated[str, StringConstraints(min_length=1, max_length=2000)]] = Field(..., min_length=1, max_length=20)
+    source: Literal["preview"] = "preview"
+
+
 class OptionRequest(BaseModel):
     """`POST .../conflicts/{cid}/vote` and `.../override`."""
     option: str = Field(..., min_length=1, max_length=500)
@@ -241,7 +260,9 @@ class Accepted(BaseModel):
 
 
 class FileSaved(Accepted):
-    version: int
+    version: Optional[int] = None
+    held: bool = False  # outside your folders: sent for approval as change request `request_id`
+    request_id: Optional[str] = None
 
 
 class BudgetView(BaseModel):
@@ -278,7 +299,8 @@ async def room_view(actor: RoomActor) -> dict[str, Any]:
     members = [membership_view(actor.room_id, actor.owner_id, "owner", actor.domain_roles.get(actor.owner_id),
                                actor.member_names.get(actor.owner_id))]
     members += [
-        membership_view(actor.room_id, uid, role, actor.domain_roles.get(uid), actor.member_names.get(uid))
+        membership_view(actor.room_id, uid, role, actor.domain_roles.get(uid), actor.member_names.get(uid),
+                        actor.access.member_role.get(uid), actor.access.member_folders.get(uid, ()))
         for uid, role in actor.members.items()
     ]
     created = (actor.created_at or datetime.now(timezone.utc)).isoformat()
@@ -295,7 +317,25 @@ async def room_view(actor: RoomActor) -> dict[str, Any]:
         "head_checkpoint_id": head,
         "created_at": created,
         "members": members,
+        "coder_roles": actor.access.roles,
+        "change_requests": [change_request_view(actor, r) for r in actor.listed_changes()],
     }
+
+
+def change_request_view(actor: RoomActor, request: ChangeRequest) -> dict[str, Any]:
+    """The web app's `ChangeRequest` shape."""
+    return {
+        "id": request.id, "path": request.path, "content": request.content, "base_version": request.base_version,
+        "requested_by": request.requested_by, "via": request.via, "task_id": request.task_id,
+        "status": request.status, "decided_by": request.decided_by, "created_at": request.created_at,
+        "approvers": sorted(actor.change_approvers(request.path)),
+    }
+
+
+def held(actor: RoomActor, e: ChangeHeld) -> JSONResponse:
+    """202: the change is waiting for approval instead of saved."""
+    body = FileSaved(seq=actor.sequence, held=True, request_id=e.request.id)
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=body.model_dump())
 
 
 # =============================================================================
@@ -625,6 +665,37 @@ async def add_member(
     return MemberResponse(room_id=room_id, user_id=request.user_id, role=request.role, sequence=actor.sequence)
 
 
+@router.put("/{room_id}/access/roles")
+async def set_coder_roles(
+    room_id: str,
+    request: CoderRolesRequest,
+    current_user: User = Depends(require_owner),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """Owner only. Replace the room's coder roles (name -> folders)."""
+    try:
+        await actor.set_coder_roles(request.roles, current_user.id, request.renames)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return await room_view(actor)
+
+
+@router.put("/{room_id}/members/{member_id}/access")
+async def set_member_access(
+    room_id: str,
+    member_id: str,
+    request: MemberAccessRequest,
+    current_user: User = Depends(require_owner),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """Owner only. Give an editor a coder role and/or folders of their own; both empty lifts every limit."""
+    try:
+        await actor.set_member_access(member_id, request.coder_role, request.folders, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return await room_view(actor)
+
+
 # =============================================================================
 # Messages and plan
 # =============================================================================
@@ -687,6 +758,35 @@ async def approve_plan(
     drafts = [item["id"] for item in await actor.get_plan() if item.get("status") == "draft"]
     await actor.approve_plan_items(drafts, current_user.id)
     return accepted(actor)
+
+
+@router.post("/{room_id}/plan/run")
+async def run_plan(
+    room_id: str,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """"Run plan": the coder retries every task it stopped on (see RoomRuntime.run_stopped)."""
+    runtime = get_registry().runtime(room_id)
+    if runtime is None or not runtime.model_available():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room has no AI model, so the coder can't run")
+    return {"accepted": True, "retried": await runtime.run_stopped(current_user.id)}
+
+
+@router.post("/{room_id}/errors")
+async def report_errors(
+    room_id: str,
+    request: ErrorReport,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """Errors from the running app become a "Fix errors" task the coder picks up by itself (task_id: None when
+    a fix task is already open, or the last fixes didn't help)."""
+    runtime = get_registry().runtime(room_id)
+    if runtime is None or not runtime.model_available():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room has no AI model, so the coder can't fix errors")
+    task_id = await runtime.report_errors(request.errors, f"the {request.source}", [current_user.id])
+    return {"accepted": True, "task_id": task_id}
 
 
 # =============================================================================
@@ -780,6 +880,10 @@ async def save_file(
         outcome, version = await actor.save_checked(path, request.content, base, current_user.id)
     except PathConflictError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except InvalidPath:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not a file path in the project: {path}")
+    except ChangeHeld as e:
+        return held(actor, e)
     if outcome == "locked":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{path} is being edited by {await _holder_name(actor, path)}")
     if outcome == "stale":
@@ -790,11 +894,23 @@ async def save_file(
     return FileSaved(seq=actor.sequence, version=version or 0)
 
 
-async def _delete(actor: RoomActor, path: str, user_id: str) -> Accepted:
+async def _delete(actor: RoomActor, path: str, user_id: str) -> Accepted | JSONResponse:
     path = path.lstrip("/")
-    if await actor.get_file(path) is None:
+    try:
+        check_path(path)
+    except InvalidPath:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not a file path in the project: {path}")
+    version = await actor.file_version(path)
+    if version is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found: {path}")
-    await actor.delete_file(path, user_id)
+    try:
+        outcome, _ = await actor.save_checked(path, None, version, user_id)
+    except ChangeHeld as e:
+        return held(actor, e)
+    if outcome == "locked":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{path} is being edited by {await _holder_name(actor, path)}")
+    if outcome == "stale":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{path} changed; reload it")
     return accepted(actor)
 
 
@@ -818,6 +934,27 @@ async def delete_file_by_path(
     return await _delete(actor, file_path, current_user.id)
 
 
+@router.post("/{room_id}/change-requests/{request_id}/{action}")
+async def decide_change_request(
+    room_id: str,
+    request_id: str,
+    action: Literal["approve", "reject", "withdraw"],
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """Approve or reject a held change (owner, or a coder whose folders hold the file), or withdraw your own."""
+    try:
+        if action == "withdraw":
+            request = await actor.withdraw_change_request(request_id, current_user.id)
+        else:
+            request = await actor.decide_change_request(request_id, current_user.id, approve=action == "approve")
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Change request not found: {request_id}")
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    return change_request_view(actor, request)
+
+
 # =============================================================================
 # Rewind, budget, session, export
 # =============================================================================
@@ -830,6 +967,9 @@ async def rewind(
     actor: RoomActor = Depends(get_room_actor),
 ) -> Accepted:
     """Rewind plan and files to a checkpoint (a checkpoint of the current state is saved first)."""
+    if actor.access.is_restricted(current_user.id, actor.owner_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Rewinding changes every folder; ask the room owner to do it")
     checkpoint_data = actor.manifest.get_checkpoint(request.checkpoint_id)
     if not checkpoint_data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Checkpoint not found: {request.checkpoint_id}")

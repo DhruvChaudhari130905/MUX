@@ -22,7 +22,7 @@ const PRESETS: Record<string, { label: string; base_url: string; models: Record<
   token_factory: { label: 'Nebius Token Factory', base_url: 'https://api.tokenfactory.nebius.com/v1', models: { lightning: '', super: '', ultra: '' } },
   openai: { label: 'OpenAI', base_url: 'https://api.openai.com/v1', models: { lightning: '', super: '', ultra: '' } },
   anthropic: { label: 'Anthropic', base_url: 'https://api.anthropic.com/v1', models: { lightning: 'claude-haiku-4-5-20251001', super: 'claude-sonnet-5-5', ultra: 'claude-opus-5-5' } },
-  openrouter: { label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1', models: { lightning: '', super: '', ultra: '' } },
+  openrouter: { label: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1', models: { lightning: 'nvidia/nemotron-3.5-lightning', super: 'nvidia/nemotron-3-super-120b-a12b', ultra: 'nvidia/nemotron-3-ultra-550b-a55b' } },
   groq: { label: 'Groq', base_url: 'https://api.groq.com/openai/v1', models: { lightning: '', super: '', ultra: '' } },
   together: { label: 'Together', base_url: 'https://api.together.xyz/v1', models: { lightning: '', super: '', ultra: '' } },
   custom: { label: 'Custom (OpenAI-compatible)', base_url: '', models: { lightning: '', super: '', ultra: '' } },
@@ -38,27 +38,39 @@ function describe(ai: RoomAi): string {
 
 export function AiModelDialog({ isOpen, onClose, roomId, isOwner }: AiModelDialogProps) {
   const [ai, setAi] = useState<RoomAi | null>(null);
-  const [provider, setProvider] = useState('openai');
-  const [baseUrl, setBaseUrl] = useState(PRESETS.openai.base_url);
+  const [provider, setProvider] = useState('openrouter');
+  const [baseUrl, setBaseUrl] = useState(PRESETS.openrouter.base_url);
   const [apiKey, setApiKey] = useState('');
-  const [models, setModels] = useState<Record<AiRole, string>>(PRESETS.openai.models);
+  const [models, setModels] = useState<Record<AiRole, string>>(PRESETS.openrouter.models);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [roleErrors, setRoleErrors] = useState<Partial<Record<AiRole, string>>>({});
+  // Model ids fetched with the key: the model fields suggest them
+  const [available, setAvailable] = useState<string[]>([]);
+  const [fetching, setFetching] = useState(false);
+  const [fetchNote, setFetchNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     setError(null);
     setRoleErrors({});
+    setAvailable([]);
+    setFetchNote(null);
     api.getAi(roomId).then(view => {
       setAi(view);
       if (view.source === 'room' && view.provider && view.base_url && view.models) {
         setProvider(view.provider);
         setBaseUrl(view.base_url);
         setModels(view.models);
+        // A saved key: offer its models straight away
+        if (isOwner) {
+          api.listAiModels(roomId, { base_url: view.base_url, api_key: '' })
+            .then(({ models: ids }) => setAvailable(ids))
+            .catch(() => { /* the Fetch models button reports errors */ });
+        }
       }
     }).catch(e => setError(e instanceof Error ? e.message : 'Could not load the AI model'));
-  }, [isOpen, roomId]);
+  }, [isOpen, roomId, isOwner]);
 
   if (!isOpen) return null;
 
@@ -66,6 +78,23 @@ export function AiModelDialog({ isOpen, onClose, roomId, isOwner }: AiModelDialo
     setProvider(name);
     setBaseUrl(PRESETS[name].base_url);
     setModels(PRESETS[name].models);
+    setAvailable([]);
+    setFetchNote(null);
+  };
+
+  const fetchModels = async () => {
+    setFetching(true);
+    setFetchNote(null);
+    try {
+      const { models: ids } = await api.listAiModels(roomId, { base_url: baseUrl.trim(), api_key: apiKey.trim() });
+      setAvailable(ids);
+      setFetchNote(ids.length ? `${ids.length} models: pick one in each field below` : 'The provider listed no models');
+    } catch (err) {
+      setAvailable([]);
+      setFetchNote(err instanceof Error ? err.message : 'Could not list the models');
+    } finally {
+      setFetching(false);
+    }
   };
 
   const save = async (e: React.FormEvent) => {
@@ -138,10 +167,20 @@ export function AiModelDialog({ isOpen, onClose, roomId, isOwner }: AiModelDialo
               <input className={`${field} mt-1`} value={apiKey} onChange={e => setApiKey(e.target.value)} type="password" autoComplete="off"
                 required={ai?.source !== 'room'} placeholder={ai?.source === 'room' ? 'Leave empty to keep the saved key' : 'sk-…'} />
             </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className="btn" onClick={fetchModels}
+                disabled={fetching || !baseUrl.trim() || (!apiKey.trim() && ai?.source !== 'room')}>
+                {fetching ? 'Fetching…' : 'Fetch models'}
+              </button>
+              {fetchNote && <span className="text-xs text-[var(--muted)]" role="status">{fetchNote}</span>}
+            </div>
+            <datalist id="ai-model-ids">
+              {available.map(id => <option key={id} value={id} />)}
+            </datalist>
             {ROLES.map(({ role, label, hint }) => (
               <label key={role} className="block text-sm">{label} <span className="text-[var(--muted)]">({hint})</span>
-                <input className={`${field} mt-1 font-mono`} value={models[role]} required
-                  onChange={e => setModels(m => ({ ...m, [role]: e.target.value.trim() }))} placeholder="model id" />
+                <input className={`${field} mt-1 font-mono`} value={models[role]} required list="ai-model-ids"
+                  onChange={e => setModels(m => ({ ...m, [role]: e.target.value.trim() }))} placeholder={available.length ? 'type to search the fetched models' : 'model id'} />
                 {roleErrors[role] && <span className="mt-1 block text-xs text-[var(--conflict)]">{roleErrors[role]}</span>}
               </label>
             ))}

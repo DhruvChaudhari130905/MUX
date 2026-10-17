@@ -22,6 +22,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional, cast
@@ -31,6 +32,7 @@ from mux.agents.coder.context import CoderContext, build_context
 from mux.agents.coder.loop import CoderLoop, CoderTask, ToolExecutor, TurnBoundary
 from mux.agents.coder.prompts import REVIEW_SYSTEM_PROMPT, UNDERSTAND_SYSTEM_PROMPT, coder_system_prompt
 from mux.agents.coder.tools import CoderToolExecutor
+from mux.agents.coder.tools.codecheck import project_problems
 from mux.agents.coder.tools.files import ActorFileTools
 from mux.agents.coder.tools.review import REVIEW_MAX_FILES, REVIEW_MAX_TURNS, review_scope
 from mux.agents.coordinator.agent import Coordinator
@@ -56,6 +58,7 @@ from mux.mcp.toolset import ALLOW, DENY, McpToolset
 import mux.skills.library as skills_library
 from mux.agents.coder.tools.skills import skills_prompt
 from mux.rooms.actor import RoomActor
+from mux.sandbox.runner import Runner
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,9 @@ CODER = "coder"
 RECENT_MESSAGES = 10
 TEAM_NOTES = 5
 RETRY, SKIP = "Retry", "Skip"
+FIX_TITLE = "Fix errors in the code"
+MAX_FIX_ATTEMPTS = 2  # fix tasks in a row that leave errors behind before the room is asked to step in
+MAX_REPORTED_ERRORS = 10
 
 # Sends an unstored envelope (agent.text.delta) to the room's sockets
 Publish = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -96,6 +102,7 @@ class RoomRuntime:
         llm: LLM,
         *,
         search: Optional[WebSearch] = None,
+        runner: Optional[Runner] = None,
         conventions: str = "",
         publish: Optional[Publish] = None,
         vote_timeout: float = 60.0,
@@ -106,6 +113,7 @@ class RoomRuntime:
         self.actor = actor
         self.llm = llm
         self.search = search
+        self.runner = runner  # the sandbox for run_build / run_tests; None: the coder isn't offered them
         self.conventions = conventions
         self.publish = publish
         self.vote_timeout = vote_timeout
@@ -113,6 +121,9 @@ class RoomRuntime:
         self.max_turns = max_turns
         self.model_error_interval = model_error_interval
         self._last_model_error = float("-inf")
+        # Set when the model failed in a way retrying can't fix (no credit, key refused): the coder starts no
+        # tasks until the AI settings change, someone runs the plan, or the model answers again
+        self._stuck: Optional[str] = None
         self._kickoff_task: Optional[asyncio.Task] = None
         self._current_kind: Optional[str] = None  # kind of the running task ("review", "understand" or None)
         self.understand_timeout = 600.0  # the kickoff stops waiting for the project read after this long
@@ -126,6 +137,11 @@ class RoomRuntime:
         self._questions: dict[str, _Question] = {}
         self._wake = asyncio.Event()
         self._current_task: Optional[str] = None
+        # Everyone whose requests shaped the running task: the coder's edits must suit all of their folders
+        # (mux/rooms/file_access.py). Empty for work the room agreed on (the owner's plan, kickoff).
+        self._task_requesters: set[str] = set()
+        self._fix_task: Optional[str] = None  # the open "Fix errors" task, so errors get one at a time
+        self._fix_attempts = 0  # fix tasks since the code last checked clean
         self._tasks: list[asyncio.Task] = []
         self._timers: set[asyncio.Task] = set()
 
@@ -240,12 +256,25 @@ class RoomRuntime:
         await self.actor.post_notice("kickoff.step", {"text": text})
 
     async def _model_error(self, error: ModelError) -> None:
-        """Tell the room its model failed, at most once per model_error_interval."""
+        """Tell the room its model failed, at most once per model_error_interval (always when the agents pause)."""
+        pausing = error.stuck and self._stuck is None
+        if error.stuck:
+            self._stuck = str(error)
         now = time.monotonic()
-        if now - self._last_model_error < self.model_error_interval:
+        if now - self._last_model_error < self.model_error_interval and not pausing:
             return
         self._last_model_error = now
-        await self.actor.post_notice("ai.error", {"error": str(error)[:300]})
+        payload: dict[str, Any] = {"error": str(error)[:300]}
+        if error.stuck:
+            payload["paused"] = True
+        await self.actor.post_notice("ai.error", payload)
+
+    def _resume(self) -> None:
+        """Something changed (new AI settings, Run plan, a model reply): the coder may start tasks again."""
+        if self._stuck is not None:
+            self._stuck = None
+            self._last_model_error = float("-inf")
+        self._wake.set()
 
     # ---- events ----
 
@@ -266,11 +295,12 @@ class RoomRuntime:
     async def _handle(self, event: BaseEvent) -> None:
         t = event.type
         if t == EventType.ROOM_AI_SETTINGS_SAVED:
-            self._wake.set()  # approved tasks waiting for a model can start
+            self._resume()  # approved tasks waiting for a model can start
             return
         if not self._model_available():
             return
         if t == EventType.KICKOFF_REQUESTED:
+            self._stuck = None  # the owner asked again: try the model (the coder waits until it answers)
             if not self.kickoff_running:
                 self._kickoff_task = asyncio.create_task(self._kickoff())
             return
@@ -306,6 +336,8 @@ class RoomRuntime:
             team_notes=list(self._notes),
         )
         decision = await self.coordinator.classify(view, message)
+        if self._stuck is not None:
+            self._resume()  # the model answers again (funds added, limit lifted): the coder carries on
         await self._spend(decision.usage, COORDINATOR)
         action = decision.action
         await self.actor.post_notice("message.labeled", {
@@ -319,15 +351,16 @@ class RoomRuntime:
                                                        or self._current_kind in ("review", "understand")):
             # Nothing is running to merge it into (e.g. every task is done), or only a read-only task that can't
             # make changes: it becomes a task of its own, so a change asked for in the feed still gets built
-            await self._add_task(message.text, plan)
+            await self._add_task(message.text, plan, requested_by=[message.author])
         elif action.label in ("merge", "interrupt"):
+            self._task_requesters.add(message.author)
             await self.actor.enqueue_message(
                 action.label, message.text, message_id=message.id, user_id=message.author,
                 rationale=action.rationale, domain=action.domain,
             )
         elif action.label == "queue" and action.add_plan_item:
             # The actor appends; `after_task_id` ordering is a later refinement.
-            await self._add_task(action.add_plan_item.title, plan)
+            await self._add_task(action.add_plan_item.title, plan, requested_by=[message.author])
         elif action.label == "conflict" and action.open_conflict and action.domain:
             await self._open_conflict(action.open_conflict, action.domain)
         elif action.label == "review" and action.review:
@@ -339,14 +372,14 @@ class RoomRuntime:
                 "created_at": now, "user": user_view(COORDINATOR, "Coordinator"), "reply_to": message.id,
             })
 
-    async def _add_task(self, title: str, plan: list[PlanItem]) -> None:
+    async def _add_task(self, title: str, plan: list[PlanItem], requested_by: Iterable[str] = ()) -> None:
         # Before the owner approves the plan, new work joins the draft instead of starting the coder
         status = "draft" if any(p.status == "draft" for p in plan) else "todo"
         title = " ".join(title.split())
-        await self.actor.add_plan_item(
-            {"id": next_task_id(plan), "title": title if len(title) <= 120 else title[:119] + "…", "status": status},
-            COORDINATOR,
-        )
+        item: dict[str, Any] = {"id": next_task_id(plan), "title": title if len(title) <= 120 else title[:119] + "…", "status": status}
+        if people := sorted(set(requested_by)):
+            item["requested_by"] = people
+        await self.actor.add_plan_item(item, COORDINATOR)
 
     async def _add_review(self, focus: str, plan: list[PlanItem]) -> None:
         # Read-only, so it doesn't wait for the owner to approve the plan
@@ -470,7 +503,8 @@ class RoomRuntime:
             self._wake.clear()
             while True:
                 task = await self._next_task()
-                if task is None or not self._model_available() or not await self.actor.check_budget_allowance():
+                if (task is None or self._stuck is not None or not self._model_available()
+                        or not await self.actor.check_budget_allowance()):
                     break
                 await self._run(task)
 
@@ -481,6 +515,7 @@ class RoomRuntime:
         task_id = item["id"]
         self._current_task = task_id
         self._current_kind = item.get("kind")
+        self._task_requesters = set(item.get("requested_by") or [])
         await self.actor.update_plan_item(task_id, {"status": "doing"}, CODER)
         asked: list[str] = []
 
@@ -492,7 +527,9 @@ class RoomRuntime:
         outcome: tuple[str, str] = ("stopped", "")
         scope = review_scope(await self.actor.list_files()) if kind == "review" else None
         skills = self._skills()
-        executor = CoderToolExecutor(ActorFileTools(self.actor), search=self.search, on_question=on_question,
+        files = ActorFileTools(self.actor, on_behalf_of=lambda: sorted(self._task_requesters), task_id=task_id)
+        executor = CoderToolExecutor(files, runner=None if review else self.runner,
+                                     search=self.search, on_question=on_question,
                                      read_only=review, review_scope=scope, skills=skills)
 
         async def ask_first(question: str) -> str:
@@ -518,6 +555,7 @@ class RoomRuntime:
                 await self.actor.update_plan_item(task_id, {"status": "done"}, CODER)
                 if not review:  # a review changes nothing, so there's nothing to checkpoint
                     await self.actor.create_checkpoint(CODER, f"After: {item['title']}")
+                    await self._check_code()
             elif "interrupted" in result.summary:
                 await self.actor.update_plan_item(task_id, {"status": "todo", "notes": "re-planning after an interrupt"}, CODER)
             else:
@@ -532,7 +570,11 @@ class RoomRuntime:
                 await self._model_error(e)
             else:
                 logger.exception(f"Room {self.actor.room_id}: coder failed on {task_id}")
-            await self._park(item, f"error: {e}")
+            if isinstance(e, ModelError) and e.stuck:
+                # Every task would fail the same way: this one waits in the queue instead of asking to retry
+                await self.actor.update_plan_item(task_id, {"status": "todo", "notes": "waiting for the AI model"}, CODER)
+            else:
+                await self._park(item, f"error: {e}")
         finally:
             self._current_task = None
             self._current_kind = None
@@ -544,6 +586,69 @@ class RoomRuntime:
         await self.actor.update_plan_item(item["id"], {"status": "skipped_question", "notes": why[:200]}, CODER)
         await self._ask(f"The coder stopped on \"{item['title']}\" ({why}). Retry it?", [RETRY, SKIP], SKIP,
                         item["id"], parked=True)
+
+    # ---- fixing errors ----
+
+    async def _check_code(self) -> None:
+        """After a task: errors anywhere in the project's code become a fix task for the coder."""
+        problems = await project_problems(ActorFileTools(self.actor))
+        if problems:
+            # The fix is bound by the same folders as the task that left the errors, so it can't redo a held change
+            await self.report_errors(problems, "the code check", self._task_requesters)
+        else:
+            self._fix_attempts = 0
+
+    async def report_errors(self, errors: list[str], source: str, requested_by: Iterable[str] = ()) -> Optional[str]:
+        """Errors found in the project (the code check after a task, or the preview): a "Fix errors" task with
+        the errors in its notes, which the coder picks up by itself. Nothing is added while a fix task is open,
+        and after MAX_FIX_ATTEMPTS fixes that left errors behind the room is told once instead, so a mistake
+        the model can't fix doesn't loop. Returns the new task's id."""
+        errors = [" ".join(e.split())[:300] for e in errors if e.strip()][:MAX_REPORTED_ERRORS]
+        plan = await self.actor.get_plan()
+        if not errors or any(p["id"] == self._fix_task and p.get("status") != "done" for p in plan):
+            return None
+        if self._fix_attempts >= MAX_FIX_ATTEMPTS:
+            if self._fix_attempts == MAX_FIX_ATTEMPTS:
+                self._fix_attempts += 1
+                await self._reply(f"The coder couldn't fix these errors by itself after {MAX_FIX_ATTEMPTS} tries: "
+                                  f"{errors[0]}. Ask for the fix in the chat, or fix it in the editor.")
+            return None
+        self._fix_attempts += 1
+        items = await self._plan_items()
+        self._fix_task = next_task_id(items)
+        fix: dict[str, Any] = {
+            "id": self._fix_task, "title": FIX_TITLE,
+            "status": "draft" if any(p.status == "draft" for p in items) else "todo",
+            "notes": f"Found by {source}:\n" + "\n".join(f"- {e}" for e in errors),
+        }
+        if people := sorted(set(requested_by)):
+            fix["requested_by"] = people
+        await self.actor.add_plan_item(fix, COORDINATOR)
+        return self._fix_task
+
+    async def run_stopped(self, user_id: str) -> int:
+        """"Run plan": retry every task the coder stopped on, as if Retry were picked on each card. A task whose
+        card is gone (skipped by its default, or a restart) goes back in the queue. Tasks waiting on the coder's
+        own question stay for the team to answer. Returns how many tasks were retried."""
+        waiting = {s.task_id: (qid, s.parked) for qid, s in self._questions.items() if s.task_id}
+        retried = 0
+        if self._stuck is not None:
+            self._resume()  # Run plan also retries the model after a pause
+            retried = sum(1 for i in await self.actor.get_plan() if i.get("status") == "todo")
+        for item in await self.actor.get_plan():
+            if item.get("status") != "skipped_question":
+                continue
+            qid, parked = waiting.get(item["id"], (None, True))
+            if not parked:
+                continue
+            if qid is not None:
+                await self.actor.command_answer_question(qid, RETRY, user_id)
+            else:
+                await self.actor.update_plan_item(item["id"], {"status": "todo", "notes": "retrying"}, user_id)
+            retried += 1
+        if retried:
+            self._wake.set()
+        return retried
 
     def _skills(self) -> dict[str, Any]:
         """The room's enabled skills that exist on the server (a removed one is simply not offered)."""
@@ -654,7 +759,11 @@ class _Narrated:
     async def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         shown = {k: v for k, v in arguments.items() if k not in ("content", "edits")}  # summaries only
         await self.actor.post_notice("tool.called", {"tool": name, "args": shown}, CODER)
-        result = await self.inner.execute(name, arguments)
+        if name in ("run_build", "run_tests") and not await self.actor.record_sandbox_run(CODER):
+            result: Any = {"ok": False, "passed": False, "error": "the room is paused: its sandbox run budget is used up",
+                           "errors": ["the room is paused: its sandbox run budget is used up"]}
+        else:
+            result = await self.inner.execute(name, arguments)
         if name == "use_skill" and isinstance(result, dict) and result.get("ok"):
             await self.actor.post_notice("skill.used", {"name": result.get("name")}, CODER)
         ok = bool(result.get("ok", True)) if isinstance(result, dict) else True

@@ -9,6 +9,7 @@ with no counterpart in the catalog return None and are not sent.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from typing import Any, Optional, cast
 
 from mux.events.models import (
@@ -46,6 +47,10 @@ from mux.events.models import (
     RoomMcpServerSavedEvent,
     RoomPasswordSetEvent,
     RoomSharingUpdatedEvent,
+    CoderRolesUpdatedEvent,
+    MemberAccessUpdatedEvent,
+    ChangeRequestedEvent,
+    ChangeRequestDecidedEvent,
     RoomSkillsSetEvent,
     TaskFinishedEvent,
     TaskStartedEvent,
@@ -71,7 +76,8 @@ def user_view(user_id: str, name: Optional[str] = None) -> dict[str, Any]:
     }
 
 
-def membership_view(room_id: str, user_id: str, permission: str, domain_role: Optional[str], name: Optional[str] = None) -> dict[str, Any]:
+def membership_view(room_id: str, user_id: str, permission: str, domain_role: Optional[str], name: Optional[str] = None,
+                    coder_role: Optional[str] = None, folders: Iterable[str] = ()) -> dict[str, Any]:
     """The `Membership` shape."""
     return {
         "user_id": user_id,
@@ -79,6 +85,8 @@ def membership_view(room_id: str, user_id: str, permission: str, domain_role: Op
         "permission": permission,
         "domain_role": domain_role or DEFAULT_DOMAIN_ROLE,
         "user": user_view(user_id, name),
+        "coder_role": coder_role,
+        "folders": list(folders),
     }
 
 
@@ -89,7 +97,7 @@ def plan_item_view(item: dict[str, Any]) -> dict[str, Any]:
         "title": item.get("title", ""),
         "status": item.get("status", "draft"),
     }
-    for key in ("owner_role", "notes", "merged_notes", "kind"):
+    for key in ("owner_role", "notes", "merged_notes", "kind", "requested_by"):
         if item.get(key) is not None:
             out[key] = item[key]
     return out
@@ -121,6 +129,21 @@ def _payload(event: BaseEvent) -> Optional[tuple[str, dict[str, Any]]]:
         e = cast(RoomSharingUpdatedEvent, event)
         # A public room is viewable by anyone signed in, and joining it grants link_permission (api/rooms.py)
         return "sharing.changed", {"link_access": "anyone" if e.public else "restricted", "link_permission": e.link_permission}
+    if t == EventType.CODER_ROLES_UPDATED:
+        return "access.roles_changed", {"coder_roles": cast(CoderRolesUpdatedEvent, event).roles}
+    if t == EventType.MEMBER_ACCESS_UPDATED:
+        e = cast(MemberAccessUpdatedEvent, event)
+        return "access.member_changed", {"user_id": e.member_id, "coder_role": e.coder_role, "folders": e.folders}
+    if t == EventType.CHANGE_REQUESTED:
+        e = cast(ChangeRequestedEvent, event)
+        return "change.requested", {
+            "id": e.request_id, "path": e.path, "content": e.content, "base_version": e.base_version,
+            "requested_by": e.requested_by, "via": e.via, "task_id": e.task_id, "status": "pending",
+            "decided_by": None, "created_at": ts, "approvers": e.approvers,
+        }
+    if t == EventType.CHANGE_REQUEST_DECIDED:
+        e = cast(ChangeRequestDecidedEvent, event)
+        return "change.decided", {"id": e.request_id, "status": e.status, "decided_by": e.decided_by}
     if t == EventType.ROOM_PASSWORD_SET:
         # Only whether there is one: the hash stays on the server
         return "sharing.changed", {"has_password": cast(RoomPasswordSetEvent, event).password_hash is not None}

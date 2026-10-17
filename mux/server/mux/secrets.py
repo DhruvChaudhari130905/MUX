@@ -2,13 +2,45 @@
 
 from __future__ import annotations
 
+import logging
+import re
+from pathlib import Path
+
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 
 from mux.config import settings
 
 
+logger = logging.getLogger(__name__)
+
+# Where ensure_secrets_key writes a new key: the .env the settings read (relative to where the server starts)
+ENV_FILE = Path(".env")
+_EMPTY_LINE = re.compile(r"^ROOM_SECRETS_KEY=[ \t]*$", re.MULTILINE)
+
+
 class SecretsUnavailable(RuntimeError):
     pass
+
+
+def ensure_secrets_key() -> None:
+    """With no ROOM_SECRETS_KEY (or old MCP_ENCRYPTION_KEY), make one and save it in .env, so room owners can
+    save keys without setting it up by hand. The key must stay: losing it makes every saved key unreadable."""
+    if settings.room_secrets_key or settings.mcp_encryption_key:
+        return
+    key = Fernet.generate_key().decode()
+    try:
+        text = ENV_FILE.read_text() if ENV_FILE.exists() else ""
+        if _EMPTY_LINE.search(text):
+            text = _EMPTY_LINE.sub(f"ROOM_SECRETS_KEY={key}", text, count=1)
+        else:
+            text += ("" if not text or text.endswith("\n") else "\n") + f"ROOM_SECRETS_KEY={key}\n"
+        ENV_FILE.write_text(text)
+    except OSError as e:
+        logger.warning("No ROOM_SECRETS_KEY and %s can't be written (%s): rooms can't save keys", ENV_FILE, e)
+        return
+    settings.room_secrets_key = key
+    logger.warning("Made a new ROOM_SECRETS_KEY in %s. Keep it (and copy it to deployed servers): "
+                   "saved room keys can't be read without it", ENV_FILE.resolve())
 
 
 def _fernet() -> MultiFernet:

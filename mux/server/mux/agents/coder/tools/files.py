@@ -13,11 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from mux.files.binary import data_url_bytes
 from mux.files.manifest import LiveFiles
 from mux.files.room_files import InvalidPath, RoomFiles, check_path
+from mux.rooms.file_access import ChangeHeld
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".pytest_cache", "dist"}
 CODER = "coder"
@@ -178,7 +179,8 @@ class RoomActorFiles(Protocol):
     async def get_file(self, path: str) -> str | None: ...
     async def file_version(self, path: str) -> int | None: ...
     async def list_files(self) -> list[str]: ...
-    async def save_checked(self, path: str, content: str | None, base_version: int | None, user_id: str) -> tuple[str, int | None]: ...
+    async def save_checked(self, path: str, content: str | None, base_version: int | None, user_id: str,
+                           on_behalf_of: Iterable[str] = (), task_id: str | None = None) -> tuple[str, int | None]: ...
 
 
 class ActorFileTools:
@@ -189,22 +191,37 @@ class ActorFileTools:
     every change reaches the room live as file.changed.
     """
 
-    def __init__(self, actor: RoomActorFiles, user_id: str = CODER) -> None:
+    def __init__(
+        self, actor: RoomActorFiles, user_id: str = CODER,
+        on_behalf_of: Callable[[], Iterable[str]] | None = None, task_id: str | None = None,
+    ) -> None:
         self.actor = actor
         self.user_id = user_id
+        # Everyone the task is for, asked at every write: a teammate merging in mid-task adds their limits
+        self.on_behalf_of = on_behalf_of or (lambda: ())
+        self.task_id = task_id
 
     async def _text(self, path: str) -> tuple[str, int]:
         check = _checked(path)
         content = await self.actor.get_file(check)
         version = await self.actor.file_version(check)
+        # A change this task sent for approval reads back as made, so later edits build on it (same request)
+        held = self.actor.held_change(self.task_id, check) if hasattr(self.actor, "held_change") else None
+        if held is not None and held.content is not None:
+            content, version = held.content, version if version is not None else 0
         if content is None or version is None:
             raise MissingFileError(f"file not found: {path}")
         if data_url_bytes(content) is not None:
             raise FileToolError(f"binary file: {path}")
         return content, version
 
-    async def _save(self, path: str, content: str | None, base_version: int | None) -> tuple[str, int | None]:
-        return await self.actor.save_checked(_checked(path), content, base_version, self.user_id)
+    async def _save(self, path: str, content: str | None, base_version: int | None) -> tuple[str, int | str | None]:
+        """("held", request id) when the file is outside the requester's folders and went for approval."""
+        try:
+            return await self.actor.save_checked(_checked(path), content, base_version, self.user_id,
+                                                 on_behalf_of=self.on_behalf_of(), task_id=self.task_id)
+        except ChangeHeld as held:
+            return "held", held.request.id
 
     async def read_file(self, path: str, start_line: int | None = None, end_line: int | None = None) -> dict[str, Any]:
         """Read a file and return its content plus version."""
@@ -214,6 +231,8 @@ class ActorFileTools:
     async def write_file(self, path: str, content: str) -> dict[str, Any]:
         """Create a new file. Refuse to overwrite an existing file."""
         outcome, version = await self._save(path, content, None)
+        if outcome == "held":
+            return _held(path, version)
         if outcome == "stale":
             raise FileAlreadyExistsError(f"file already exists: {path}")
         if outcome == "locked":
@@ -229,6 +248,8 @@ class ActorFileTools:
         if isinstance(updated, dict):
             return updated
         outcome, version = await self._save(path, updated, current)
+        if outcome == "held":
+            return _held(path, version)
         if outcome == "locked":
             return {"ok": False, "error": "locked: a teammate is editing this file", "path": path}
         if outcome == "stale":  # a person saved between our read and write
@@ -240,6 +261,8 @@ class ActorFileTools:
         if await self.actor.file_version(_checked(path)) is None:
             raise MissingFileError(f"file not found: {path}")
         outcome, version = await self._save(path, None, base_version)
+        if outcome == "held":
+            return _held(path, version)
         if outcome == "locked":
             return {"ok": False, "error": "locked: a teammate is editing this file", "path": path}
         if outcome == "stale":
@@ -249,6 +272,14 @@ class ActorFileTools:
     async def list_files(self, path: str = ".") -> dict[str, Any]:
         """Return the room's files under path."""
         return _list_under(await self.actor.list_files(), path)
+
+
+def _held(path: str, request_id: Any) -> dict[str, Any]:
+    return {
+        "ok": True, "held": True, "path": path, "request_id": request_id,
+        "message": "This file is outside the folders of the person who asked for this task, so the change was "
+                   "sent to the room for approval. Do not retry it or work around it; carry on with the rest of the task.",
+    }
 
 
 def _checked(path: str) -> str:

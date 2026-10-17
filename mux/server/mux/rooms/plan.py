@@ -24,6 +24,7 @@ class PlanItem(TypedDict, total=False):
     title: str
     status: str  # draft, todo, doing, done, skipped_conflict, skipped_question
     owner_role: Optional[str]  # pm, design, eng
+    requested_by: Optional[List[str]]  # people whose requests shaped the task (their folders bound the coder)
     notes: Optional[str]
     merged_notes: Optional[List[str]]
 
@@ -69,6 +70,10 @@ class Plan:
                 raise ValueError(
                     f"Invalid owner_role '{validated['owner_role']}'. Must be 'pm', 'design', or 'eng'"
                 )
+
+        people = validated.get("requested_by")
+        if people is not None and not (isinstance(people, list) and all(isinstance(p, str) for p in people)):
+            raise ValueError("Plan item 'requested_by' must be a list of user ids if provided")
 
         # Optional notes: must be string if present
         if "notes" in validated and validated["notes"] is not None:

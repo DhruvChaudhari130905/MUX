@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { X, Copy, UserPlus, UserCheck, MessageCircle, Trash2, KeyRound, Mail } from 'lucide-react';
 import type { Invite, Room } from '@/types';
 import { api } from '@/lib/api';
+import { AccessSection } from './AccessSection';
 
 interface ShareDialogProps {
   isOpen: boolean;
@@ -279,6 +280,8 @@ export function ShareDialog({ isOpen, onClose, room: initialRoom, isOwner }: Sha
               </div>
               <NoticeLine notice={passwordNotice} />
             </form>
+
+            <AccessSection room={room} onRoom={setRoom} />
           </>
         )}
 
@@ -294,7 +297,10 @@ export function ShareDialog({ isOpen, onClose, room: initialRoom, isOwner }: Sha
                   </span>
                   <div>
                     <p className="font-medium">{member.user.name}</p>
-                    <p className="text-sm text-[var(--muted)] capitalize">{member.permission}</p>
+                    <p className="text-sm text-[var(--muted)]">
+                      <span className="capitalize">{member.permission}</span>
+                      {member.coder_role && <> · {member.coder_role}</>}
+                    </p>
                   </div>
                 </div>
                 <span className="text-xs text-[var(--muted)] uppercase">{member.domain_role}</span>

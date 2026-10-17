@@ -1,19 +1,16 @@
-# Starter image for Nebius sandboxes: Node, the full-stack template, and the approved packages preinstalled.
-FROM node:20-bookworm-slim
+# Sandbox image for the coder's builds and tests (mux/server/mux/sandbox/docker.py).
+# Build it with `make sandbox-image`. Each run unpacks the room's files over /app, then runs
+# `mux-report build|test ...` with no network, so every package a project can use is installed here.
+FROM node:22-bookworm-slim
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-WORKDIR /workspace
+COPY package.json ./
+RUN npm install --no-audit --no-fund && npm cache clean --force
 
-# TODO: copy the full-stack template and preinstall the approved packages, e.g.
-#   COPY template/ /workspace/
-#   RUN npm ci
+COPY tsconfig.json ./
+COPY mux-report.mjs /usr/local/bin/mux-report
+RUN chmod 755 /usr/local/bin/mux-report && chown -R node:node /app
 
-# Run as the unprivileged user that ships with the node image
-RUN chown node:node /workspace
+ENV PATH=/app/node_modules/.bin:$PATH
 USER node
-
-# Keep the container alive; the backend execs commands into it
-CMD ["sleep", "infinity"]

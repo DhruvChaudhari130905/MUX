@@ -5,7 +5,7 @@ SERVER := mux/server
 WEB := mux/web
 VENV := $(SERVER)/.venv
 
-.PHONY: help setup setup-server setup-web demo web server tunnel funnel db-up db-down test test-server typecheck-server check-web check
+.PHONY: help setup setup-server setup-web demo web server tunnel funnel db-up db-down sandbox-image test test-server typecheck-server check-web check
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -40,6 +40,9 @@ db-up: ## Start the local Postgres (port 5433) used by the DB tests
 
 db-down: ## Stop the local Postgres
 	cd $(SERVER) && docker compose down
+
+sandbox-image: ## Build the Docker image the coder's builds and tests run in (needs Docker running)
+	docker build -t mux-sandbox mux/infra/sandbox-image
 
 test-server: ## Backend tests (DB tests need `make db-up`)
 	cd $(SERVER) && .venv/bin/pytest -q

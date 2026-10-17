@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Protocol
 
 import httpx2
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI, BadRequestError
 from pydantic import BaseModel
 
 from mux.config import settings
@@ -59,7 +59,31 @@ class LLM(Protocol):
     ) -> LLMReply: ...
 
 class ModelError(Exception):
-    """A model call failed (bad key, unknown model, rate limit, provider down). The text is safe to show."""
+    """A model call failed (bad key, unknown model, rate limit, provider down). The text is safe to show.
+
+    `stuck` is set when retrying can't help until someone acts (no credit, key refused, model missing).
+    """
+
+    def __init__(self, message: str = "", *, stuck: bool = False) -> None:
+        super().__init__(message)
+        self.stuck = stuck
+
+
+# What the provider's HTTP status means for the room, and whether the agents should stop until someone acts
+_STATUS_TEXT: dict[int, tuple[str, bool]] = {
+    401: ("the AI provider refused the API key (401). Check the key, or pick another model in AI model", True),
+    402: ("the AI account is out of credit (402). Add funds to it, or pick another provider in AI model", True),
+    403: ("the AI provider refused access (403). Check the key and the account, or pick another model in AI model", True),
+    404: ("the AI model wasn't found (404). Pick a model this key can use in AI model", True),
+    429: ("the AI provider is rate limiting this room (429). It will try again with the next message", False),
+}
+
+
+def describe_api_error(e: Exception) -> tuple[str, bool] | None:
+    """Plain words for a provider error the room can act on, and whether it is stuck; None for anything else."""
+    if isinstance(e, APIStatusError):
+        return _STATUS_TEXT.get(e.status_code)
+    return None
 
 
 class NoModel(ModelError):
@@ -79,6 +103,8 @@ class OpenAILLM:
                                              timeout=timeout, http_client=http)
         self._models = models
         self._thinking = thinking
+        # The structured-output mode each model accepts, learned from its 400s (see _JSON_MODES)
+        self._json_modes: dict[str, str] = {}
 
     async def chat(self, role, messages, *, tools=None, schema=None,
                    reasoning=None, max_tokens=None, on_delta=None) -> LLMReply:
@@ -86,17 +112,24 @@ class OpenAILLM:
         kwargs: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
-        if schema is not None:
-            kwargs["response_format"] = {
-                "type":"json_schema",
-                "json_schema" : {"name": schema.__name__, "schema": schema.model_json_schema(), "strict": False},
-            }
         if reasoning is not None and self._thinking:
             #(spike) confirm the switch name Token Factory accepts for Nemotron
             kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": reasoning}}
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if schema is None:
+            return await self._send(kwargs, model, on_delta)
+        while True:
+            mode = self._json_modes.get(model, _JSON_MODES[0])
+            try:
+                return await self._send(_with_schema(kwargs, schema, mode), model, on_delta)
+            except BadRequestError as e:
+                # Many providers (Groq, Ollama, ...) support only some response formats: step down and remember
+                if mode == _JSON_MODES[-1] or not _format_refused(e):
+                    raise
+                self._json_modes[model] = _JSON_MODES[_JSON_MODES.index(mode) + 1]
 
+    async def _send(self, kwargs, model, on_delta) -> LLMReply:
         if on_delta is None:
             resp = await self._client.chat.completions.create(**kwargs)
             choice = resp.choices[0]
@@ -113,6 +146,10 @@ class OpenAILLM:
                 finish_reason = choice.finish_reason,
             )
         return await self._stream(kwargs, model, on_delta)
+
+    async def list_models(self) -> list[str]:
+        """The model ids the key can use (GET /models), sorted."""
+        return sorted({m.id async for m in self._client.models.list() if m.id})
 
     async def _stream(self, kwargs, model, on_delta) -> LLMReply:
         stream = await self._client.chat.completions.create(
@@ -147,6 +184,31 @@ class OpenAILLM:
         if not calls:
             calls, content = text_tool_calls(content)
         return LLMReply(text=content, model=model, usage=usage, tool_calls=calls, finish_reason=finish)
+
+
+# Tried in order: a JSON schema response format, plain JSON mode, then only the schema written into the prompt
+_JSON_MODES = ["json_schema", "json_object", "prompt"]
+
+
+def _format_refused(e: BadRequestError) -> bool:
+    """Whether a 400 is about the response format (Groq: param 'response_format', "does not support response format")."""
+    text = str(e).lower()
+    return e.param == "response_format" or "response_format" in text or "response format" in text
+
+
+def _with_schema(kwargs: dict[str, Any], schema: type[BaseModel], mode: str) -> dict[str, Any]:
+    """kwargs asking for JSON matching schema: by response_format where the model allows it, else in the prompt."""
+    json_schema = schema.model_json_schema()
+    if mode == "json_schema":
+        return {**kwargs, "response_format": {
+            "type": "json_schema", "json_schema": {"name": schema.__name__, "schema": json_schema, "strict": False}}}
+    # JSON mode needs "JSON" in the messages (Groq, OpenAI), and the schema is all the model has to go on
+    note = {"role": "system", "content": "Answer with a single JSON object, and nothing else, matching this "
+                                         f"JSON schema:\n{json.dumps(json_schema)}"}
+    out = {**kwargs, "messages": [*kwargs["messages"], note]}
+    if mode == "json_object":
+        out["response_format"] = {"type": "json_object"}
+    return out
 
 
 def TokenFactoryLLM() -> OpenAILLM:

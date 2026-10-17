@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from mux.agents.llm import LLM, LLMReply, ModelError, ModelRole, NoModel, OpenAILLM
+from mux.agents.llm import LLM, LLMReply, ModelError, ModelRole, NoModel, OpenAILLM, describe_api_error
 from mux.config import settings
 from mux.secrets import SecretsUnavailable, decrypt_value
 from mux.urls import UrlNotAllowed, check_url_async
@@ -70,8 +70,11 @@ class RoomLLM:
             return await client.chat(role, messages, **kwargs)
         # `from None`: a chained original error would put the unredacted key in logged tracebacks
         except ModelError as e:
-            raise ModelError(redact(str(e), secret)) from None
+            raise ModelError(redact(str(e), secret), stuck=e.stuck) from None
         except Exception as e:  # openai.APIError and transport errors
+            if known := describe_api_error(e):
+                text, stuck = known
+                raise ModelError(text, stuck=stuck) from None
             raise ModelError(redact(f"{type(e).__name__}: {e}", secret)) from None
 
 

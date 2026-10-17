@@ -42,6 +42,8 @@ interface CenterTabsProps {
   fileVersions: Map<string, number>;
   lockedFiles: Set<string>;
   lockingUser: Map<string, string>;
+  // Outside your folders: saving there sends the change for approval (lib/fileAccess.ts)
+  needsApproval?: (path: string, isDirectory: boolean) => boolean;
 }
 
 type Settings = EditorSettings;
@@ -94,6 +96,7 @@ export function CenterTabs({
   fileVersions,
   lockedFiles,
   lockingUser,
+  needsApproval,
 }: CenterTabsProps) {
   const [openTabs, setOpenTabs] = useState<string[]>(activeFile ? [activeFile] : []);
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map()); // unsaved edits per file
@@ -474,6 +477,7 @@ export function CenterTabs({
   const activeContent = activeFile ? contentOf(activeFile) : '';
   const isLocked = !!activeFile && lockedFiles.has(activeFile);
   const isDirty = !!activeFile && dirtyFiles.has(activeFile);
+  const heldSave = !!activeFile && !!needsApproval?.(activeFile, false);
   const lineCount = activeContent.split('\n').length;
   const errorCount = problems.filter(p => p.severity === 'error').length;
   const warningCount = problems.length - errorCount;
@@ -530,6 +534,7 @@ export function CenterTabs({
             createRequest={createRequest}
             onImport={() => setImporting({ initial: null })}
             onImportDrop={items => setImporting({ initial: importFromDrop(items) })}
+            needsApproval={needsApproval}
           />
           </div>
           {sideView === 'search' && (
@@ -649,10 +654,10 @@ export function CenterTabs({
                       className={`btn ml-1 flex items-center gap-1.5 !py-1 text-xs transition-all ${isDirty && !isLocked ? 'primary' : ''}`}
                       onClick={() => save(activeFile!)}
                       disabled={isLocked || !isDirty}
-                      title={isLocked ? 'File is locked by another user' : 'Save (⌘S / Ctrl+S)'}
+                      title={isLocked ? 'File is locked by another user' : heldSave ? 'Outside your folders: this sends the change for approval (⌘S / Ctrl+S)' : 'Save (⌘S / Ctrl+S)'}
                     >
                       {!isDirty && toast?.text.startsWith('Saved') ? <Check className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
-                      Save
+                      {heldSave ? 'Send for approval' : 'Save'}
                     </button>
                   </div>
                 </div>

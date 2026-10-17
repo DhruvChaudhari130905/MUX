@@ -1,9 +1,9 @@
-"""Uploads the current files, runs type-check, build, and tests from the starter image, and records the snapshot UUID."""
+"""Uploads the current files, runs type-check, build, and tests from the starter image, and records the snapshot UUID (if the sandbox keeps one)."""
 
 import json
 import re
 import shlex
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -19,7 +19,7 @@ TEST_CMD = "vitest run"  # the report script adds --reporter=json --outputFile=<
 # prints at most 20 `file:line: message` lines, plus `MUX_SUMMARY {"passed": n, "failed": m}` for tests.
 REPORT_SCRIPT = "mux-report"
 SUMMARY_PREFIX = "MUX_SUMMARY "
-TIMEOUT_S = 30  # until the server cap is confirmed (test_contract[real])
+TIMEOUT_S = 90  # a cold Docker start plus tsc and vite build on a laptop
 PROJECT_DIR = "/app"  # assumption: template root inside the starter image (Q36)
 PATTERN_RE = re.compile(r"^[\w./*-]{1,200}$")
 
@@ -75,30 +75,44 @@ def _summary(output: str) -> tuple[int, int] | None:
 
 
 class Runner:
-    """Builds and tests a manifest in the sandbox."""
+    """Builds and tests a room's files in the sandbox: a manifest (with `get_blob`) or the files themselves."""
 
     def __init__(
-        self, client: SandboxClient, get_blob: Callable[[str], Awaitable[bytes]], image: str
+        self, client: SandboxClient, get_blob: Callable[[str], Awaitable[bytes]] | None = None, *, image: str
     ) -> None:
         self._client = client
         self._get_blob = get_blob
         self._image = image
 
-    async def _run(self, m: Manifest, command: str, *, disposable: bool) -> RunResult:
+    async def _files(self, m: Manifest) -> dict[str, bytes]:
+        if self._get_blob is None:
+            raise TypeError("building a manifest needs get_blob")
         paths = [check_path(p) for p in m]  # validate all before fetching any blob
-        files = {f"{PROJECT_DIR}/{p}": file_bytes(await self._get_blob(m[p].hash)) for p in paths}
+        return {p: await self._get_blob(m[p].hash) for p in paths}
+
+    async def _run(self, files: Mapping[str, bytes], command: str, *, disposable: bool) -> RunResult:
+        """Run `command` on `files` (room path -> stored bytes) under PROJECT_DIR."""
+        uploads = {f"{PROJECT_DIR}/{check_path(p)}": file_bytes(data) for p, data in files.items()}
         return await self._client.run(
-            image=self._image, files=files, command=command, cwd=PROJECT_DIR,
+            image=self._image, files=uploads, command=command, cwd=PROJECT_DIR,
             disposable=disposable, timeout_s=TIMEOUT_S,
         )
 
     async def build(self, m: Manifest) -> BuildResult:
+        """`build_files` on the manifest's files."""
+        return await self.build_files(await self._files(m))
+
+    async def test(self, m: Manifest, pattern: str | None = None) -> TestResult:
+        """`test_files` on the manifest's files."""
+        return await self.test_files(await self._files(m), pattern)
+
+    async def build_files(self, files: Mapping[str, bytes]) -> BuildResult:
         """Type-check and build; keeps the snapshot (`disposable=False`), and its UUID only on success.
 
         A sandbox failure (timeout, failed operation) is a failed build, not an exception.
         """
         try:
-            res = await self._run(m, wrap("build", BUILD_CMD), disposable=False)
+            res = await self._run(files, wrap("build", BUILD_CMD), disposable=False)
         except SandboxError as e:
             return BuildResult(passed=False, duration_s=0.0, errors=[f"sandbox: {e}"], snapshot_uuid=None)
         passed = res.exit_code == 0
@@ -109,7 +123,7 @@ class Runner:
             snapshot_uuid=res.snapshot_uuid if passed else None,
         )
 
-    async def test(self, m: Manifest, pattern: str | None = None) -> TestResult:
+    async def test_files(self, files: Mapping[str, bytes], pattern: str | None = None) -> TestResult:
         """Run Vitest (optionally for one file pattern) in a disposable container."""
         args: list[str] = []
         if pattern is not None:
@@ -117,7 +131,7 @@ class Runner:
                 raise InvalidPattern(pattern)
             args.append(pattern)
         try:
-            res = await self._run(m, wrap("test", TEST_CMD, *args), disposable=True)
+            res = await self._run(files, wrap("test", TEST_CMD, *args), disposable=True)
         except SandboxError as e:
             return TestResult(False, None, None, [f"sandbox: {e}"])
         passed = res.exit_code == 0

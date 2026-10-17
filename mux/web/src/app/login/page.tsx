@@ -5,7 +5,7 @@ import { Github, Chrome, Mail, Terminal } from 'lucide-react';
 import { getSession, signInWithProvider, signInWithEmail, signUpWithEmail, isSupabaseConfigured, safeNext } from '@/lib/supabase';
 import { onAuthStateChange } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { ShaderBackground, SiteFooter, SiteHeader, RoomCursors, HeroBackdrop } from '@/components/shell';
+import { ShaderBackground, SiteFooter, SiteHeader, HeroBackdrop } from '@/components/shell';
 
 // Sign-in screen, built in the stitch Developer Workspace style (no stitch screen exists for it)
 
@@ -105,7 +105,6 @@ export default function LoginPage() {
 
       <main className="relative isolate z-10 flex flex-[1_0_auto] items-center justify-center overflow-hidden px-gutter pb-space-xl pt-24">
         <HeroBackdrop />
-        <RoomCursors spread className="z-0" chatter={['saving you a seat', 'join us!', 'we need a designer', 'vote closes in 30s', 'build passed', 'hi there']} />
         {loading ? (
           <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
         ) : (
