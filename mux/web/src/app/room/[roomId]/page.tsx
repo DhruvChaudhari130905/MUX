@@ -350,7 +350,7 @@ export default function RoomPage() {
       writeLocal([{ path, content, version: baseVersion + 1 }]);
     } catch (error) {
       console.error('Failed to save file:', error);
-      alert('Failed to save file. Version may have changed.');
+      alert(`Failed to save ${path}: ${error instanceof Error ? error.message : 'the server could not be reached'}`);
       throw error; // keep the unsaved draft in the editor
     }
   }, [roomId, writeLocal, restoreHeld]);
