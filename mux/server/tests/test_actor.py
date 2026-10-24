@@ -179,6 +179,39 @@ class TestRoomActorPlanManagement:
 
         assert [item["id"] for item in await actor.get_plan()] == ["t1", "t2"]
 
+    @pytest.mark.asyncio
+    async def test_material_plan_edit_requires_approval_again(self, actor):
+        await actor.start()
+        await actor.add_plan_item({"id": "t1", "title": "Original task", "status": "draft"}, "coordinator")
+        await actor.approve_plan_items(["t1"], "owner")
+
+        changed = await actor.replace_plan(
+            [{"id": "t1", "title": "Changed task", "status": "todo"}], "editor",
+        )
+        assert changed[0]["status"] == "draft"
+
+        unchanged = await actor.replace_plan(
+            [{"id": "t1", "title": "Changed task", "status": "draft"}], "editor",
+        )
+        assert unchanged[0]["status"] == "draft"
+        await actor.approve_plan_items(["t1"], "owner")
+        still_approved = await actor.replace_plan(
+            [{"id": "t1", "title": "Changed task", "status": "draft"}], "editor",
+        )
+        assert still_approved[0]["status"] == "todo"
+
+    @pytest.mark.asyncio
+    async def test_command_plan_edits_cannot_approve_changed_or_new_work(self, actor):
+        await actor.start()
+        await actor.add_plan_item({"id": "t1", "title": "Original task", "status": "draft"}, "coordinator")
+        await actor.command_edit_plan([
+            {"type": "update", "item_id": "t1", "changes": {"title": "Changed task", "status": "todo"}},
+            {"type": "add", "item": {"id": "t2", "title": "New task", "status": "todo"}},
+        ], "editor")
+        assert [(item["title"], item["status"]) for item in await actor.get_plan()] == [
+            ("Changed task", "draft"), ("New task", "draft"),
+        ]
+
 
 class TestRoomActorInboxProcessing:
     """Tests for inbox message handling at turn boundaries."""

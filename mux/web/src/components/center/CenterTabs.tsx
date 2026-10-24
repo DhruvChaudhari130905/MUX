@@ -39,6 +39,7 @@ interface CenterTabsProps {
   onDeleteFile: (path: string, isDirectory: boolean) => void;
   onRenameFile: (from: string, to: string, isDirectory: boolean) => void;
   onUploadFiles: (files: UploadedFile[]) => void;
+  onReplaceFiles: (files: UploadedFile[]) => Promise<void>;
   fileVersions: Map<string, number>;
   lockedFiles: Set<string>;
   lockingUser: Map<string, string>;
@@ -93,6 +94,7 @@ export function CenterTabs({
   onDeleteFile,
   onRenameFile,
   onUploadFiles,
+  onReplaceFiles,
   fileVersions,
   lockedFiles,
   lockingUser,
@@ -196,6 +198,12 @@ export function CenterTabs({
     [drafts, files],
   );
 
+  const previewFiles = useMemo(() => {
+    const merged = new Map(files);
+    drafts.forEach((content, path) => merged.set(path, { content }));
+    return merged;
+  }, [files, drafts]);
+
   // Unsaved editor changes would be lost: let the browser ask before the tab closes or reloads
   useEffect(() => {
     if (!dirtyFiles.size) return;
@@ -268,15 +276,19 @@ export function CenterTabs({
     }
   };
 
-  const applyImport = (incoming: { path: string; content: string }[], mode: ImportMode) => {
-    setImporting(null);
+  const applyImport = async (incoming: { path: string; content: string }[], mode: ImportMode) => {
+    if (mode === 'replace' && dirtyFiles.size > 0 && !window.confirm(`Replace the project and discard ${dirtyFiles.size} unsaved file${dirtyFiles.size === 1 ? '' : 's'}?`)) return;
     if (mode === 'replace') {
-      const keep = new Set(incoming.map(f => f.path));
-      Array.from(files.keys()).filter(p => !keep.has(p) && !lockedFiles.has(p)).forEach(p => onDeleteFile(p, false));
+      try {
+        await onReplaceFiles(incoming);
+      } catch (error) {
+        throw new Error(`Project replacement failed: ${(error as Error).message}`);
+      }
       setOpenTabs([]);
       setDrafts(new Map());
-    }
-    onUploadFiles(incoming);
+      setBaseline(new Map(incoming.map(({ path, content }) => [path, content])));
+    } else onUploadFiles(incoming);
+    setImporting(null);
     // Open something useful rather than whichever file happened to be last
     const entry = ['README.md', 'readme.md', 'package.json', 'src/App.tsx', 'src/main.tsx', 'index.html', 'main.py']
       .map(name => incoming.find(f => f.path === name || f.path.endsWith(`/${name}`)))
@@ -505,7 +517,7 @@ export function CenterTabs({
       </div>
 
       <div className="stage" id="stagePreview" hidden={activeTab === 'code'}>
-        <Preview files={files} fs={terminalFs} roomId={roomId} title={roomTitle} description={roomDescription} plan={plan} />
+        <Preview files={previewFiles} fs={{ ...terminalFs, files: previewFiles }} roomId={roomId} title={roomTitle} description={roomDescription} plan={plan} />
       </div>
 
       <div className="stage !p-2.5" id="stageCode" hidden={activeTab !== 'code'}>

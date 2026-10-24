@@ -465,18 +465,11 @@ async def join_room(
                       else "This room is private; ask the owner to invite you")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
-    presence = await actor.user_join(
-        user_id=current_user.id,
-        user_name=request.user_name,
-        avatar_url=request.avatar_url,
-    )
-
     return RoomJoinResponse(
         user_id=current_user.id,
-        user_name=presence.user_name,
-        avatar_url=presence.avatar_url,
-        status=presence.status,
-        # presence.joined_at is a monotonic clock value, not wall time
+        user_name=request.user_name or current_user.name,
+        avatar_url=request.avatar_url,
+        status="online",
         joined_at=datetime.now(timezone.utc).isoformat(),
     )
 

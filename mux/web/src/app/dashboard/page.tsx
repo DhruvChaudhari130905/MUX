@@ -598,7 +598,7 @@ function FeaturedRoom({ room, currentUser, onDelete }: { room: Room; currentUser
           <div className="rounded-xl border border-white/10 bg-surface/60 p-space-md text-left">
             <div className="font-code text-code-sm uppercase tracking-wider text-outline">Your seat</div>
             <div className="font-code text-code-md font-semibold text-on-surface">
-              {me ? `${me.permission[0].toUpperCase()}${me.permission.slice(1)} · ${me.domain_role.toUpperCase()}` : 'Guest'} · {room.members.length}/8 steering
+              {me ? `${me.permission[0].toUpperCase()}${me.permission.slice(1)} · ${me.domain_role.toUpperCase()}` : 'Guest'}
             </div>
           </div>
           <Link

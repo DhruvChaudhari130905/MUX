@@ -54,6 +54,8 @@ export default function RoomPage() {
   const [activeFile, setActiveFile] = useState<string | null>(null);
   // Which room the files in state belong to; saving waits until they've loaded
   const filesRoom = useRef<string | null>(null);
+  const replacingFiles = useRef(false);
+  const pendingFileOperations = useRef(new Set<Promise<unknown>>());
   const [files, setFiles] = useState<Map<string, { content: string }>>(new Map());
   const [fileVersions, setFileVersions] = useState<Map<string, number>>(new Map());
   const [lockedFiles, setLockedFiles] = useState<Set<string>>(new Set());
@@ -69,6 +71,14 @@ export default function RoomPage() {
   }, [state?.plan]);
 
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
+  const trackFileOperation = <T,>(operation: Promise<T>): Promise<T> => {
+    pendingFileOperations.current.add(operation);
+    void operation.then(
+      () => pendingFileOperations.current.delete(operation),
+      () => pendingFileOperations.current.delete(operation),
+    );
+    return operation;
+  };
 
   // Server version of each file whose content is in `files`. file.changed carries only path, hash and
   // version, so any newer version (the coder's edits, a teammate's save) is fetched from the files API.
@@ -154,6 +164,7 @@ export default function RoomPage() {
         let serverPaths = new Set<string>();
         const unsubState = socket.onState((newState) => {
           setState(newState);
+          if (replacingFiles.current) return;
           const entries = fileEntries(newState.files);
           const paths = new Set(entries.map(([path]) => path));
           const gone = Array.from(serverPaths).filter(path => !paths.has(path));
@@ -347,7 +358,7 @@ export default function RoomPage() {
   const handleFileSave = useCallback(async (path: string, content: string, baseVersion: number) => {
     if (!roomId) return;
     try {
-      const { held } = await api.saveFile(roomId, path, content, baseVersion);
+      const { held } = await trackFileOperation(api.saveFile(roomId, path, content, baseVersion));
       if (held) {
         await restoreHeld(path);
         return;
@@ -363,7 +374,7 @@ export default function RoomPage() {
   const handleCreateFile = useCallback((path: string, content = starterContent(path), open = true) => {
     writeLocal([{ path, content, version: 1 }]);
     if (open) setActiveFile(path);
-    api.saveFile(roomId, path, content, 0)
+    trackFileOperation(api.saveFile(roomId, path, content, 0))
       .then(({ held }) => { if (held) void restoreHeld(path); })
       .catch(error => console.error('Failed to create file:', error));
   }, [roomId, writeLocal, restoreHeld]);
@@ -375,18 +386,72 @@ export default function RoomPage() {
     // Uploads and imports replace files of the same name, so no base version (0 would mean "new file" and
     // the server refuses it for every file that already exists). Keep the version the server assigns.
     uploaded.forEach(f =>
-      api.saveFile(roomId, f.path, f.content, null)
+      trackFileOperation(api.saveFile(roomId, f.path, f.content, null))
         .then(({ version, held }) => (held ? restoreHeld(f.path) : writeLocal([{ ...f, version: version ?? 0 }])))
         .catch(error => console.error(`Could not save ${f.path} to the room:`, error)),
     );
   }, [roomId, writeLocal, restoreHeld]);
+
+  const handleReplaceFiles = useCallback(async (incoming: { path: string; content: string }[]) => {
+    await Promise.allSettled(Array.from(pendingFileOperations.current));
+    if (lockedFiles.size) throw new Error('Unlock the room files before replacing the project.');
+    const previous = new Map(filesRef.current);
+    const previousVersions = new Map(syncedVersions.current.versions);
+    const remotePaths = Array.from(previousVersions.keys());
+    const remoteFiles = await Promise.all(remotePaths.map(path => api.readFile(roomId, path)));
+    remoteFiles.forEach(file => previous.set(file.path, { content: file.content }));
+    const next = new Map(incoming.map(file => [file.path, { content: file.content }]));
+    const nextVersions = new Map<string, number>();
+    replacingFiles.current = true;
+    try {
+      const results = await Promise.allSettled([
+        ...incoming.map(file => trackFileOperation(api.saveFile(roomId, file.path, file.content, null)).then(result => {
+          if (result.held) throw new Error(`${file.path} requires approval and was not replaced.`);
+          nextVersions.set(file.path, result.version ?? 0);
+        })),
+        ...Array.from(previous.keys()).filter(path => !next.has(path)).map(async path => {
+          const result = await trackFileOperation(api.deleteFile(roomId, path));
+          if (result?.held) throw new Error(`${path} requires approval and was not removed.`);
+        }),
+      ]);
+      const failed = results.find(result => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      filesRoom.current = roomId;
+      syncedVersions.current = { roomId, versions: nextVersions };
+      setFiles(next);
+      setFileVersions(nextVersions);
+      setActiveFile(['README.md', 'src/App.tsx', 'package.json', 'index.html'].find(path => next.has(path)) ?? null);
+      await saveRoomFiles(roomId, next);
+    } catch (error) {
+      const restoredVersions = new Map<string, number>();
+      const rollback = await Promise.allSettled([
+        ...Array.from(previous, ([path, file]) => trackFileOperation(api.saveFile(roomId, path, file.content, null)).then(result => {
+          if (result.held) throw new Error(`Could not restore ${path}`);
+          restoredVersions.set(path, result.version ?? previousVersions.get(path) ?? 0);
+        })),
+        ...Array.from(next.keys()).filter(path => !previous.has(path)).map(path => trackFileOperation(api.deleteFile(roomId, path)).then(result => {
+          if (result?.held) throw new Error(`Could not remove ${path}`);
+        })),
+      ]);
+      const failedRollback = rollback.some(result => result.status === 'rejected');
+      setFiles(previous);
+      setFileVersions(restoredVersions);
+      syncedVersions.current = { roomId, versions: restoredVersions };
+      await saveRoomFiles(roomId, previous).catch(() => undefined);
+      throw new Error(failedRollback
+        ? `${(error as Error).message} The server could not fully restore the previous project; reload the room to reconcile files.`
+        : (error as Error).message);
+    } finally {
+      replacingFiles.current = false;
+    }
+  }, [roomId, lockedFiles]);
 
   const handleDeleteFile = useCallback((path: string, isDirectory: boolean) => {
     const targets = isDirectory
       ? Array.from(filesRef.current.keys()).filter(p => p.startsWith(path + '/'))
       : [path];
     removeLocal(targets);
-    targets.forEach(p => api.deleteFile(roomId, p)
+    targets.forEach(p => trackFileOperation(api.deleteFile(roomId, p))
       .then(result => { if (result?.held) void restoreHeld(p); })
       .catch(error => console.error('Failed to delete file:', error)));
   }, [roomId, removeLocal, restoreHeld]);
@@ -415,7 +480,7 @@ export default function RoomPage() {
     // A rename is "save the new path, then delete the old one": if either half went for approval, the old
     // file must stay (deleting it after a held save would lose the file)
     moves.forEach(m =>
-      api.saveFile(roomId, m.newPath, m.content, 0)
+      trackFileOperation(api.saveFile(roomId, m.newPath, m.content, 0))
         .then(async ({ held }) => {
           if (held) {  // the folders changed after the check above: keep the old file
             await restoreHeld(m.newPath);
@@ -424,7 +489,7 @@ export default function RoomPage() {
             if (entry) writeLocal([{ path: m.oldPath, content: m.content, version: entry.version }]);
             return;
           }
-          const removed = await api.deleteFile(roomId, m.oldPath);
+          const removed = await trackFileOperation(api.deleteFile(roomId, m.oldPath));
           if (removed?.held) await restoreHeld(m.oldPath);
         })
         .catch(error => console.error('Failed to rename file:', error)),
@@ -589,7 +654,7 @@ export default function RoomPage() {
       <ShaderBackground className="shader-bg" />
       <div className="app h-screen">
         <TopBar
-          room={room}
+          room={{ ...room, members: state.room.members.length ? state.room.members : room.members }}
           currentUser={currentUser}
           currentUserMembership={currentUserMembership}
           budget={state.budget}
@@ -632,6 +697,7 @@ export default function RoomPage() {
             onDeleteFile={handleDeleteFile}
             onRenameFile={handleRenameFile}
             onUploadFiles={handleUploadFiles}
+            onReplaceFiles={handleReplaceFiles}
             fileVersions={fileVersions}
             lockedFiles={lockedFiles}
             lockingUser={lockingUser}

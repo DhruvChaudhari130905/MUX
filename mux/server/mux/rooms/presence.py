@@ -142,6 +142,7 @@ class PresenceManager:
             offline_cleanup_age: Seconds after which offline users are removed (default 1 hour).
         """
         self._users: Dict[str, UserPresence] = {}
+        self._connections: Dict[str, int] = {}
         self._idle_timeout = idle_timeout
         self._offline_cleanup_age = offline_cleanup_age
         self._use_asyncio = use_asyncio
@@ -166,6 +167,7 @@ class PresenceManager:
         """
         async with self._async_mutex:
             existing = self._users.get(user_id)
+            self._connections[user_id] = self._connections.get(user_id, 0) + 1
             if existing:
                 updated = existing.with_rejoin(user_name, avatar_url)
                 self._users[user_id] = updated
@@ -188,6 +190,7 @@ class PresenceManager:
     ) -> UserPresence:
         with self._sync_mutex:
             existing = self._users.get(user_id)
+            self._connections[user_id] = self._connections.get(user_id, 0) + 1
             if existing:
                 updated = existing.with_rejoin(user_name, avatar_url)
                 self._users[user_id] = updated
@@ -205,10 +208,20 @@ class PresenceManager:
     async def leave(self, user_id: str) -> Optional[UserPresence]:
         """Remove a user's presence when they leave the room."""
         async with self._async_mutex:
+            connections = self._connections.get(user_id, 0)
+            if connections > 1:
+                self._connections[user_id] = connections - 1
+                return self._users.get(user_id)
+            self._connections.pop(user_id, None)
             return self._users.pop(user_id, None)
 
     def leave_sync(self, user_id: str) -> Optional[UserPresence]:
         with self._sync_mutex:
+            connections = self._connections.get(user_id, 0)
+            if connections > 1:
+                self._connections[user_id] = connections - 1
+                return self._users.get(user_id)
+            self._connections.pop(user_id, None)
             return self._users.pop(user_id, None)
 
     async def set_typing(self, user_id: str, typing: bool) -> bool:

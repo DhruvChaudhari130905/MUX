@@ -106,8 +106,8 @@ export function PlanList({ plan, canEdit, canApprove, onUpdate, onReorder, onApp
     e.preventDefault();
     const title = newTitle.trim();
     if (!title) return;
-    // Ready for the coder straight away, unless a draft is waiting for approval: then it joins the draft
-    const item: PlanItem = { id: `u${Date.now().toString(36)}`, title, status: hasDrafts ? 'draft' : 'todo' };
+    // Newly requested work stays a draft until the owner approves it.
+    const item: PlanItem = { id: `u${Date.now().toString(36)}`, title, status: 'draft' };
     onUpdate([...plan, item]);
     setNewTitle('');
   };

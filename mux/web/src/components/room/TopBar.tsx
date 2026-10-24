@@ -86,7 +86,7 @@ export function TopBar({
       <div className="room">
         <span className="name">{room.title}</span>
         <span className="sub mono">
-          room · {room.members.length} members · 8 steering seats
+          room · {room.members.length} members
         </span>
       </div>
       <div className="spacer" />

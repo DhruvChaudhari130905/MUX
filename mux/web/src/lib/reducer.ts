@@ -42,12 +42,19 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       break;
     }
     case 'member.joined': {
-      newState.room = { ...newState.room, members: [...(newState.room.members ?? []), event.payload as any] };
+      const member = event.payload as any;
+      newState.room = {
+        ...newState.room,
+        members: [...(newState.room.members ?? []).filter(m => m.user_id !== member.user_id), member],
+      };
       break;
     }
     case 'member.role_changed': {
-      const member = newState.room.members.find(m => m.user_id === (event.payload as any).user_id);
-      if (member) member.permission = (event.payload as any).permission;
+      const { user_id, permission } = event.payload as any;
+      newState.room = {
+        ...newState.room,
+        members: newState.room.members.map(member => member.user_id === user_id ? { ...member, permission } : member),
+      };
       break;
     }
     case 'sharing.changed': {
@@ -285,6 +292,10 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       // The server keeps one presence per user and re-sends presence.join on every join (the REST join,
       // the socket, a second tab): replace the user's entry instead of adding another
       newState.presence = [...newState.presence.filter(p => p.user_id !== event.payload.user_id), event.payload];
+      break;
+    }
+    case 'presence.snapshot': {
+      newState.presence = event.payload.users;
       break;
     }
     case 'presence.leave': {

@@ -198,7 +198,7 @@ export function SiteHeader({ active, profileActive = false }: SiteHeaderProps) {
 
   return (
     <>
-    <YouCursor />
+    {active !== 'overview' && <YouCursor />}
     <SpotlightTracker />
     <DemoBanner />
     <header className="pointer-events-none fixed inset-x-0 top-0 z-50 px-2.5 pt-2.5 font-ui">

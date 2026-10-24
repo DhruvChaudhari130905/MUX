@@ -192,16 +192,21 @@ export function pushRoomFiles(roomId: string, files: Map<string, { content: stri
     const wc = await container();
     for (const [path, { content }] of Array.from(files)) {
       if (synced.get(path) === content) continue;
-      synced.set(path, content);
       await ensureDir(wc, path);
       await wc.fs.writeFile(path, fileBytes(content));
+      synced.set(path, content);
     }
     for (const path of Array.from(synced.keys())) {
       if (files.has(path)) continue;
-      synced.delete(path);
       await wc.fs.rm(path, { force: true });
+      synced.delete(path);
     }
-  }).catch(err => console.warn('WebContainer sync failed:', err));
+  }).catch(err => {
+    console.warn('WebContainer sync failed:', err);
+    if (mountedRoom === roomId && previewRoom === roomId) {
+      setPreview({ phase: 'error', error: `Preview file sync failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  });
   return pushChain;
 }
 
@@ -386,7 +391,9 @@ export interface PreviewState {
 
 let preview: PreviewState = { phase: 'idle', log: '' };
 let previewRoom: string | null = null;
+let previewGeneration = 0;
 let devProcess: WebContainerProcess | null = null;
+let installProcess: WebContainerProcess | null = null;
 const previewListeners = new Set<(state: PreviewState) => void>();
 
 function setPreview(change: Partial<PreviewState>) {
@@ -417,27 +424,39 @@ export function previewRoomId(): string | null {
 export async function startPreview(roomId: string, fs: RoomFs, script: string): Promise<void> {
   if (previewRoom === roomId && preview.phase !== 'idle' && preview.phase !== 'error') return;
   stopPreview();
+  const generation = ++previewGeneration;
   previewRoom = roomId;
   setPreview({ phase: 'installing', log: '', url: undefined, error: undefined });
   try {
     const wc = await attachRoom(roomId, fs);
-    if (previewRoom !== roomId) return;
+    if (previewRoom !== roomId || generation !== previewGeneration) return;
 
     // npm install runs once per set of dependencies: the container may already hold them (same tab,
     // "Try again"), or this browser saved them from an earlier install (any visit, reloads included)
     const packageJson = fs.files.get('package.json')?.content ?? '';
     const key = packageJson ? await snapshotKey(packageJson).catch(() => null) : null;
-    if (packageJson && (await installedFor(wc)) === packageJson) {
+    if (previewRoom !== roomId || generation !== previewGeneration) return;
+    const installedPackage = packageJson ? await installedFor(wc) : null;
+    if (previewRoom !== roomId || generation !== previewGeneration) return;
+    if (packageJson && installedPackage === packageJson) {
       appendLog('$ npm install (skipped: packages are already installed for this package.json)\n');
     } else if (key && await restoreSnapshot(wc, key, roomId, packageJson)) {
-      if (previewRoom !== roomId) return;
+      if (previewRoom !== roomId || generation !== previewGeneration) return;
     } else {
       appendLog('$ npm install\n');
       packagesTouched = true;
       const install = await wc.spawn('npm', ['install']);
-      void install.output.pipeTo(new WritableStream({ write: appendLog }));
+      if (previewRoom !== roomId || generation !== previewGeneration) {
+        install.kill();
+        return;
+      }
+      installProcess = install;
+      void install.output.pipeTo(new WritableStream({ write: chunk => {
+        if (generation === previewGeneration) appendLog(chunk);
+      } }));
       const installed = await install.exit;
-      if (previewRoom !== roomId) return;
+      if (installProcess === install) installProcess = null;
+      if (previewRoom !== roomId || generation !== previewGeneration) return;
       if (installed !== 0) throw new Error(`npm install failed (exit code ${installed})`);
       await wc.fs.writeFile(INSTALLED_MARKER, packageJson).catch(() => undefined);
       if (key) await keepSnapshot(wc, key, roomId);
@@ -446,14 +465,21 @@ export async function startPreview(roomId: string, fs: RoomFs, script: string): 
     setPreview({ phase: 'starting' });
     appendLog(`\n$ npm run ${script}\n`);
     const stopListening = onServerReady((_port, url) => {
-      if (previewRoom === roomId && preview.phase === 'starting') setPreview({ phase: 'ready', url });
+      if (previewRoom === roomId && generation === previewGeneration && preview.phase === 'starting') setPreview({ phase: 'ready', url });
     });
     const proc = await wc.spawn('npm', ['run', script]);
+    if (previewRoom !== roomId || generation !== previewGeneration) {
+      stopListening();
+      proc.kill();
+      return;
+    }
     devProcess = proc;
-    void proc.output.pipeTo(new WritableStream({ write: appendLog }));
+    void proc.output.pipeTo(new WritableStream({ write: chunk => {
+      if (generation === previewGeneration) appendLog(chunk);
+    } }));
     void proc.exit.then(code => {
       stopListening();
-      if (devProcess !== proc) return; // stopped on purpose
+      if (devProcess !== proc || generation !== previewGeneration) return; // stopped or superseded
       devProcess = null;
       // The installed packages may be why it crashed: the next start ("Try again") installs afresh
       // instead of skipping npm install and failing the same way
@@ -462,13 +488,17 @@ export async function startPreview(roomId: string, fs: RoomFs, script: string): 
       setPreview({ phase: 'error', url: undefined, error: `npm run ${script} exited (code ${code})` });
     });
   } catch (error) {
-    if (previewRoom === roomId) setPreview({ phase: 'error', error: error instanceof Error ? error.message : String(error) });
+    if (previewRoom === roomId && generation === previewGeneration) setPreview({ phase: 'error', error: error instanceof Error ? error.message : String(error) });
   }
 }
 
 export function stopPreview() {
+  previewGeneration++;
   const proc = devProcess;
+  const installer = installProcess;
   devProcess = null;
+  installProcess = null;
   proc?.kill();
+  installer?.kill();
   setPreview({ phase: 'idle', url: undefined, error: undefined });
 }

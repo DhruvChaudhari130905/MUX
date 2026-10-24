@@ -9,7 +9,7 @@ type PresenceHandler = (presence: Presence[]) => void;
 type StateHandler = (state: RoomState) => void;
 
 // Presence updates carry the room's current seq rather than a new one, so they never count as replays
-const EPHEMERAL_TYPES = new Set(['presence.tab', 'presence.typing']);
+const EPHEMERAL_TYPES = new Set(['presence.tab', 'presence.typing', 'presence.snapshot']);
 
 export class SocketClient {
   private ws: WebSocket | null = null;

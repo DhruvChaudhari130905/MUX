@@ -20,7 +20,7 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 from mux.auth.supabase import User, display_name, verify_supabase_token
 from mux.events.bus import event_bus
 from mux.events.models import BaseEvent
-from mux.events.wire import ephemeral, to_envelope
+from mux.events.wire import ephemeral, to_envelope, user_view
 from mux.rooms.actor import ROOM_ID_PATTERN, RoomActor
 from mux.rooms.registry import get_registry
 
@@ -85,6 +85,21 @@ async def room_websocket(
 
     try:
         await actor.subscribe_since(since, dump_and_subscribe)
+        existing = await actor.get_all_presence()
+        snapshot = [
+            {
+                "user_id": user_id,
+                "user": user_view(user_id, value.get("user_name")),
+                "tab": value.get("active_tab") or "feed",
+                "active": value.get("status") != "offline",
+                "typing": value.get("typing", False),
+                "last_seen": _now(),
+            }
+            for user_id, value in existing.items()
+        ]
+        await websocket.send_text(json.dumps(ephemeral(
+            room_id, actor.sequence, "presence.snapshot", user.id, {"users": snapshot}, _now(),
+        )))
         # Records presence + sitting activity; reaches everyone (this client too) as presence.join
         await actor.user_join(user_id=user.id)
 

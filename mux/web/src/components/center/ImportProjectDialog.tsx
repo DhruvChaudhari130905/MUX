@@ -64,10 +64,18 @@ export function ImportProjectDialog({ existingPaths, lockedFiles, initial, onImp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result, mode, folder, existingPaths, lockedFiles]);
 
-  const confirm = () => {
+  const confirm = async () => {
     if (!result) return;
     const files = result.files.map(f => ({ path: target(f.path), content: f.content })).filter(f => !lockedFiles.has(f.path));
-    onImport(files, mode);
+    setLoading(true);
+    setError(null);
+    try {
+      await onImport(files, mode);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const modes: { id: ImportMode; icon: React.ElementType; label: string; detail: string }[] = [
@@ -164,6 +172,7 @@ export function ImportProjectDialog({ existingPaths, lockedFiles, initial, onImp
                   </span>
                 </div>
               )}
+              {error && <p className="mt-3 text-[12px] text-[var(--conflict)]">{error}</p>}
             </>
           )}
         </div>
@@ -171,7 +180,7 @@ export function ImportProjectDialog({ existingPaths, lockedFiles, initial, onImp
         {result && result.files.length > 0 && !loading && (
           <div className="flex justify-end gap-2 border-t border-[var(--line)] px-4 py-3">
             <button type="button" className="btn" onClick={onClose}>Cancel</button>
-            <button type="button" className="btn primary" onClick={confirm} disabled={mode === 'folder' && !folder.trim()}>
+            <button type="button" className="btn primary" onClick={() => void confirm()} disabled={loading || (mode === 'folder' && !folder.trim())}>
               Import {result.files.length} file{result.files.length === 1 ? '' : 's'}
             </button>
           </div>

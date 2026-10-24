@@ -85,7 +85,8 @@ def tool_reply(*calls: tuple[str, dict[str, Any]]) -> LLMReply:
 
 
 @pytest.mark.asyncio
-async def test_room_starts_with_an_empty_plan_that_fills_from_the_feed(setup):
+async def test_new_feed_requests_wait_for_owner_approval(setup):
+    from mux.agents.coordinator.schema import PlanDraft
     registry, llm, logs, runtimes = setup
     actor = await new_room(registry, llm, logs, plan=None)
     log = logs[actor.room_id]
@@ -93,14 +94,16 @@ async def test_room_starts_with_an_empty_plan_that_fills_from_the_feed(setup):
     # Nothing is planned from the room's description
     assert await actor.get_plan() == [] and llm.calls == []
 
-    # What the user asks for becomes a task, and with no draft to approve the coder builds it straight away
+    # What the user asks for becomes a draft even when the room previously had no draft.
     llm.push(
         CoordinatorAction(label="queue", rationale="new work", add_plan_item=AddPlanItem(title="Booking page")),
-        tool_reply(("finish_task", {"summary": "Added the booking page"})),
+        "not usable questions", "still not usable questions", PlanDraft(tasks=[{"title": "Booking page"}]),  # type: ignore[list-item]
     )
     await actor.add_message("chat", "build a booking page", message_id="m1", user_id="alice", enqueue=False)
-    await until(lambda: of_type(log, EventType.TASK_FINISHED))
-    assert [(p["id"], p["title"], p["status"]) for p in await actor.get_plan()] == [("t1", "Booking page", "done")]
+    await until(lambda: len(of_type(log, EventType.PLAN_ITEM_ADDED)) == 1)
+    assert [(p["id"], p["title"], p["status"]) for p in await actor.get_plan()] == [("t1", "Booking page", "draft")]
+    assert not of_type(log, EventType.TASK_STARTED)
+    assert "build a booking page" in "\n".join(m["content"] for m in llm.calls[-1].messages)
     await registry.shutdown_all()
 
 
@@ -225,7 +228,7 @@ async def test_token_usage_reaches_the_room_after_every_coder_turn(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_a_change_asked_for_after_the_plan_is_done_gets_built(setup):
+async def test_a_change_after_the_plan_is_done_waits_for_approval(setup):
     registry, llm, logs, _ = setup
     actor = await new_room(registry, llm, logs)
     log = logs[actor.room_id]
@@ -236,16 +239,22 @@ async def test_a_change_asked_for_after_the_plan_is_done_gets_built(setup):
     await actor.approve_plan_items(["t1"], "alice")
     await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 1)
 
-    # The coder is idle; a change asked for in the feed becomes a task and runs straight away
+    # The coder is idle; new work becomes a draft and stays inert until the owner approves it.
+    llm.push(CoordinatorAction(label="merge", rationale="small change to the page", domain="ui"))
+    await actor.add_message("chat", "make the heading blue", message_id="m1", user_id="alice", enqueue=False)
+    await until(lambda: len(of_type(log, EventType.PLAN_ITEM_ADDED)) == 1)
+    plan = await actor.get_plan()
+    assert [(p["title"], p["status"]) for p in plan] == [("Booking page", "done"), ("make the heading blue", "draft")]
+    assert len(of_type(log, EventType.TASK_STARTED)) == 1
+    assert "blue" not in (await actor.get_file("index.html") or "")
+
     llm.push(
-        CoordinatorAction(label="merge", rationale="small change to the page", domain="ui"),
         tool_reply(("edit_file", {"path": "index.html", "base_version": 1, "edits": [{"find": "<h1>", "replace": "<h1 style=\"color:blue\">"}]})),
         tool_reply(("finish_task", {"summary": "Blue heading"})),
     )
-    await actor.add_message("chat", "make the heading blue", message_id="m1", user_id="alice", enqueue=False)
+    await actor.approve_plan_items([plan[1]["id"]], "alice")
     await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 2)
-    plan = await actor.get_plan()
-    assert [(p["title"], p["status"]) for p in plan] == [("Booking page", "done"), ("make the heading blue", "done")]
+    assert "blue" in (await actor.get_file("index.html") or "")
     assert "blue" in (await actor.get_file("index.html") or "")
     await registry.shutdown_all()
 

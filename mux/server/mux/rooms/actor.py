@@ -582,7 +582,11 @@ class RoomActor:
     async def user_leave(self, user_id: str) -> Optional[UserPresence]:
         """User leaves the room."""
         async with self._lock:
-            presence = await self.presence.leave(user_id)
+            removed = await self.presence.leave(user_id)
+            presence = await self.presence.get(user_id)
+            if presence is not None:
+                # Another tab is still connected, so the user remains present in the room.
+                return presence
             await self.sitting.record_leave(user_id)
             event = UserLeftEvent(
                 id=uuid4(),
@@ -594,7 +598,7 @@ class RoomActor:
                 prev_event_id=None,
             )
             await self._emit(event)
-        return presence
+        return removed
 
     # ---- Presence updates ----
 
@@ -662,7 +666,18 @@ class RoomActor:
     async def replace_plan(self, items: list[dict], user_id: str) -> list[dict]:
         async with self._lock:
             old = {i["id"]: i for i in await self.plan.get_items()}
-            items = [self._bind_requesters(old.get(i.get("id", "")), i, user_id) for i in items]
+            normalized = []
+            for item in items:
+                previous = old.get(item.get("id", ""))
+                item = self._bind_requesters(previous, item, user_id)
+                if previous is None or any(item.get(key) != previous.get(key) for key in ("title", "notes", "owner_role")):
+                    # A new or materially changed task cannot inherit an approved status from the client.
+                    item["status"] = "draft"
+                else:
+                    # Preserve execution state only for an unchanged task; clients cannot approve drafts.
+                    item["status"] = previous.get("status", "draft")
+                normalized.append(item)
+            items = normalized
             new_items = await self.plan.replace(items)
             event = PlanUpdatedEvent(
                 id=uuid4(),
@@ -1787,11 +1802,19 @@ class RoomActor:
             bound: list[dict] = []
             for edit in edits:
                 if edit.get("type") == "add" and isinstance(edit.get("item"), dict):
-                    edit = {**edit, "item": self._bind_requesters(None, edit["item"], issued_by)}
+                    item = self._bind_requesters(None, edit["item"], issued_by)
+                    item["status"] = "draft"
+                    edit = {**edit, "item": item}
                 elif edit.get("type") == "update" and isinstance(edit.get("changes"), dict):
                     before = old.get(edit.get("item_id", ""))
                     after = self._bind_requesters(before, {**(before or {}), **edit["changes"]}, issued_by)
                     changes = {k: v for k, v in edit["changes"].items() if k != "requested_by"}
+                    changed_scope = any(after.get(key) != (before or {}).get(key) for key in ("title", "notes", "owner_role"))
+                    if changed_scope:
+                        changes["status"] = "draft"
+                    else:
+                        # Plan editing cannot approve a draft or change task execution state.
+                        changes.pop("status", None)
                     if after.get("requested_by") != (before or {}).get("requested_by"):
                         changes["requested_by"] = after.get("requested_by")
                     edit = {**edit, "changes": changes}

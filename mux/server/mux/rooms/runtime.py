@@ -189,11 +189,12 @@ class RoomRuntime:
     def kickoff_running(self) -> bool:
         return self._kickoff_task is not None and not self._kickoff_task.done()
 
-    async def _kickoff(self, brief: str | None = None) -> None:
+    async def _kickoff(self, request: str | None = None) -> None:
         """"Plan it with me": understand the project, ask the team, draft a plan (spec 2026-10-10)."""
         try:
             meta = self.actor.manifest.get_room_metadata()
-            description = (brief or meta.get("description") or meta.get("name") or "").strip()
+            room_description = (meta.get("description") or meta.get("name") or "").strip()
+            description = " ".join((request or room_description).split())
             summary = description
             if await self.actor.list_files():
                 await self._step("Reading your project…")
@@ -357,6 +358,11 @@ class RoomRuntime:
         await self._apply(action, message, plan)
 
     async def _apply(self, action: CoordinatorAction, message: Message, plan: list[PlanItem]) -> None:
+        if not plan and action.label in ("merge", "interrupt", "queue") and not self.kickoff_running:
+            # The first actionable request starts the inspect → clarify → draft workflow. The message is
+            # context for planning, never a direct instruction to the coder.
+            self._kickoff_task = asyncio.create_task(self._kickoff(message.text))
+            return
         if action.label in ("merge", "interrupt") and (self._current_task is None
                                                        or self._current_kind in ("review", "understand")):
             # Nothing is running to merge it into (e.g. every task is done), or only a read-only task that can't
@@ -383,8 +389,8 @@ class RoomRuntime:
             })
 
     async def _add_task(self, title: str, plan: list[PlanItem], requested_by: Iterable[str] = ()) -> None:
-        # Before the owner approves the plan, new work joins the draft instead of starting the coder
-        status = "draft" if any(p.status == "draft" for p in plan) else "todo"
+        # New requests always need owner approval, even after an earlier plan was approved.
+        status = "draft"
         title = " ".join(title.split())
         item: dict[str, Any] = {"id": next_task_id(plan), "title": title if len(title) <= 120 else title[:119] + "…", "status": status}
         if people := sorted(set(requested_by)):

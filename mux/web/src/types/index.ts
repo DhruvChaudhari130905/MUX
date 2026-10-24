@@ -345,6 +345,7 @@ export type EventType =
   | 'export.started'
   | 'export.finished'
   | 'presence.join'
+  | 'presence.snapshot'
   | 'presence.leave'
   | 'presence.typing'
   | 'presence.tab'
