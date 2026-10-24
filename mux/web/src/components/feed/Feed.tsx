@@ -120,6 +120,8 @@ export function Feed({
 }: FeedProps) {
   const [win, setWin] = React.useState<Window>('agent');
   const feedEndRef = React.useRef<HTMLDivElement>(null);
+  // Member names, for the composer's @mention autocomplete
+  const mentionNames = React.useMemo(() => Object.values(memberNames ?? {}), [memberNames]);
 
   const agentMessages = React.useMemo(() => messages.filter(m => m.to !== 'team'), [messages]);
   const teamMessages = React.useMemo(() => messages.filter(m => m.to === 'team'), [messages]);
@@ -202,11 +204,11 @@ export function Feed({
 
       {/* One message box per window, both kept mounted so a half-written message survives switching */}
       <div hidden={win !== 'agent'}>
-        <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="agent" />
+        <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="agent" mentionNames={mentionNames} />
       </div>
       <div hidden={win !== 'team'}>
         {canPostTeam ? (
-          <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="team" canAttach={canPostTeam} />
+          <Composer onSend={onSendMessage} canPostTeam={canPostTeam} target="team" canAttach={canPostTeam} mentionNames={mentionNames} />
         ) : (
           <div className="composer"><p className="hint">Viewers can read team notes but not post them.</p></div>
         )}

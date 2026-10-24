@@ -350,6 +350,13 @@ def test_plan_conflict_question_session_commands(client):
     items = [{"id": "t1", "title": "Pricing page", "status": "draft"}, {"id": "t2", "title": "Auth", "status": "draft"}]
     r = client.patch(f"/rooms/{rid}/plan", json={"items": items}, headers=auth("alice"))
     assert r.status_code == 200 and r.json()["accepted"] is True
+    # Regression: removing a task from the plan UI must not survive on the server
+    kept = [{"id": "t1", "title": "Pricing page", "status": "draft"}]
+    r = client.patch(f"/rooms/{rid}/plan", json={"items": kept}, headers=auth("alice"))
+    assert r.status_code == 200
+    room = registry_call(client, room_registry.get_registry().get_room, rid)
+    plan = registry_call(client, room.get_plan)
+    assert [i["id"] for i in plan] == ["t1"], plan
     assert client.post(f"/rooms/{rid}/plan/approve", headers=auth("alice")).status_code == 200
     room = registry_call(client, room_registry.get_registry().get_room, rid)
     assert {i["status"] for i in registry_call(client, room.get_plan)} == {"todo"}

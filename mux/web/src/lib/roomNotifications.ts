@@ -1,6 +1,7 @@
 // Turns live room events into notifications (see notifications.ts)
 import type { AppEvent, ChangeRequest, PlanItem, User } from '@/types';
 import { notify } from './notifications';
+import { isMentioned } from './mentions';
 
 export interface RoomNotifyContext {
   roomTitle: string;
@@ -13,12 +14,6 @@ export interface RoomNotifyContext {
 
 const clip = (text: string, n = 140) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
 
-function mentions(text: string, user: User): boolean {
-  const handles = [user.name, user.name.split(' ')[0], user.email.split('@')[0]].filter(Boolean).map(h => h.toLowerCase());
-  const lower = text.toLowerCase();
-  return lower.includes('@everyone') || lower.includes('@here') || handles.some(h => lower.includes(`@${h}`));
-}
-
 export function notifyForEvent(event: AppEvent, ctx: RoomNotifyContext) {
   const { currentUser, roomTitle } = ctx;
 
@@ -27,7 +22,7 @@ export function notifyForEvent(event: AppEvent, ctx: RoomNotifyContext) {
       const msg = event.payload;
       if (msg.user_id === currentUser.id) return; // your own message
       const who = ctx.nameOf(msg.user_id);
-      if (mentions(msg.text, currentUser)) {
+      if (isMentioned(msg.text, currentUser)) {
         notify({ category: 'mentions', title: `${who} mentioned you in ${roomTitle}`, body: clip(msg.text) });
       } else {
         notify({ category: 'messages', title: `${who} · ${roomTitle}`, body: clip(msg.text) });

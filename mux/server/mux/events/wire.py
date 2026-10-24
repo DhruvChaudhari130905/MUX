@@ -35,6 +35,7 @@ from mux.events.models import (
     PlanCreatedEvent,
     PlanItemAddedEvent,
     PlanItemCompletedEvent,
+    PlanItemRemovedEvent,
     PlanItemUpdatedEvent,
     PlanUpdatedEvent,
     QuestionAnsweredEvent,
@@ -214,6 +215,8 @@ def _payload(event: BaseEvent) -> Optional[tuple[str, dict[str, Any]]]:
     if t == EventType.PLAN_ITEM_UPDATED:
         e = cast(PlanItemUpdatedEvent, event)
         return "plan.item_updated", {"id": e.item_id, "changes": e.updates}
+    if t == EventType.PLAN_ITEM_REMOVED:
+        return "plan.item_removed", {"item_id": cast(PlanItemRemovedEvent, event).item_id}
     if t == EventType.PLAN_ITEM_COMPLETED:
         return "task.finished", {"task_id": cast(PlanItemCompletedEvent, event).item_id}
     if t == EventType.TASK_STARTED:

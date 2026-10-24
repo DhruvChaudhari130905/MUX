@@ -128,6 +128,10 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       );
       break;
     }
+    case 'plan.item_removed': {
+      newState.plan = newState.plan.filter(p => p.id !== event.payload.item_id);
+      break;
+    }
     case 'coordinator.reply': {
       // Coordinator replies are added as messages
       newState.messages = [...newState.messages, event.payload as any];

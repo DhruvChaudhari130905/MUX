@@ -14,6 +14,8 @@ interface ComposerProps {
   target?: MessageTo;
   // Photos are for people only, so only Team notes can carry them
   canAttach?: boolean;
+  // People in the room, for the @mention autocomplete (names)
+  mentionNames?: string[];
 }
 
 // "@sam can you check this" reads as a note to a person, not an instruction for the agent
@@ -24,7 +26,7 @@ const PHOTO_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const MAX_PHOTOS = 4;
 
-export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTarget, canAttach = false }: ComposerProps) {
+export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTarget, canAttach = false, mentionNames }: ComposerProps) {
   const inputId = useId(); // the Agent and Team windows each have a box, so the id must be unique
   const [text, setText] = useState('');
   const [to, setTo] = useState<MessageTo>('agent');
@@ -39,6 +41,44 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
   photosRef.current = photos;
   useEffect(() => () => photosRef.current.forEach(p => URL.revokeObjectURL(p.url)), []);
 
+  // ── @mention autocomplete ──────────────────────────────────────────────
+  // Where in the draft the unfinished "@..." token starts (index of the @), or null
+  const [menu, setMenu] = useState<{ start: number; query: string } | null>(null);
+  const [highlight, setHighlight] = useState(0);
+
+  const mentionMatches = React.useMemo(() => {
+    if (!menu || !mentionNames?.length) return [];
+    const q = menu.query.trim().toLowerCase();
+    if (!q) return mentionNames.slice(0, 6);
+    // Prefix hits (whole name or first name) rank above substring hits
+    const score = (n: string): number => {
+      const lower = n.toLowerCase();
+      if (lower.startsWith(q) || lower.split(/\s+/)[0].startsWith(q)) return 0;
+      return lower.includes(q) ? 1 : 2;
+    };
+    return [...mentionNames].sort((a, b) => score(a) - score(b)).slice(0, 6);
+  }, [menu, mentionNames]);
+
+  const updateMentionMenu = (value: string) => {
+    const caret = inputRef.current?.selectionStart ?? value.length;
+    const m = /(^|\s)@([\w.-]*)$/.exec(value.slice(0, caret)); // the @token the caret sits in
+    setMenu(m ? { start: caret - m[2].length - 1, query: m[2] } : null);
+    setHighlight(0);
+  };
+
+  const chooseMention = (name: string) => {
+    if (!menu) return;
+    const caret = inputRef.current?.selectionStart ?? text.length;
+    const next = `${text.slice(0, menu.start)}@${name} ${text.slice(caret)}`;
+    setMenu(null);
+    handleChange(next);
+    requestAnimationFrame(() => {
+      const at = menu.start + name.length + 2;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(at, at);
+    });
+  };
+
   const target: MessageTo = fixedTarget ?? (canPostTeam ? to : 'agent');
   const attach = canAttach && target === 'team';
 
@@ -46,6 +86,7 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
     setText(value);
     if (!value) setPicked(false);
     if (!fixedTarget && canPostTeam && !picked && MENTION_START.test(value)) setTo('team');
+    updateMentionMenu(value);
   };
 
   // Insert at the cursor (or the end), then put the cursor after the emoji
@@ -88,6 +129,21 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
   const pick = (next: MessageTo) => {
     setTo(next);
     setPicked(true);
+  };
+
+  // While the mention menu is open the keys steer it instead of typing/submitting
+  const onInputKeyDown = (e: React.KeyboardEvent) => {
+    if (!menu || !mentionMatches.length) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      setHighlight(h => (h + dir + mentionMatches.length) % mentionMatches.length);
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault(); // Enter must not send while a pick is highlighted
+      chooseMention(mentionMatches[highlight]);
+    } else if (e.key === 'Escape') {
+      setMenu(null);
+    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -140,16 +196,38 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
         <label htmlFor={inputId} className="mono" hidden>
           Message
         </label>
-        <input
-          ref={inputRef}
-          id={inputId}
-          autoComplete="off"
-          placeholder={target === 'team' ? 'Note to the team…' : 'Message the agent…'}
-          value={text}
-          onChange={(e) => handleChange(e.target.value)}
-          onPaste={onPaste}
-          disabled={disabled}
-        />
+        <span className="relative flex flex-1 min-w-0">
+          <input
+            ref={inputRef}
+            id={inputId}
+            autoComplete="off"
+            placeholder={target === 'team' ? 'Note to the team…' : 'Message the agent…'}
+            value={text}
+            onChange={(e) => handleChange(e.target.value)}
+            onKeyDown={onInputKeyDown}
+            onPaste={onPaste}
+            disabled={disabled}
+          />
+          {mentionMatches.length > 0 && (
+            <div className="mention-menu" role="listbox" aria-label="Mention someone">
+              {mentionMatches.map((name, i) => (
+                <button
+                  key={name}
+                  type="button"
+                  role="option"
+                  aria-selected={i === highlight}
+                  className={i === highlight ? 'mention-option active' : 'mention-option'}
+                  // mousedown, not click: keeps focus in the input so the caret logic works
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => chooseMention(name)}
+                >
+                  <span className="mention-at mono">@</span>
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
         {attach && (
           <>
             <button type="button" className="btn icon" aria-label="Add photo" title="Add photo" onClick={() => fileRef.current?.click()}>
@@ -167,7 +245,7 @@ export function Composer({ onSend, disabled, canPostTeam = true, target: fixedTa
       {error && <div className="composer-error" role="alert">{error}</div>}
       <div className="hint">
         {target === 'team'
-          ? 'Team notes go to people in the room only. The agent never sees them.'
+          ? 'Team notes go to people in the room only. The agent never sees them. Type @ to tag someone.'
           : 'Try "add a pricing page", "stop", or "make headings bigger". The coordinator labels each message.'}
       </div>
     </div>

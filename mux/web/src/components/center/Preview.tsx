@@ -94,7 +94,7 @@ function useFullscreen<T extends HTMLElement>() {
   return { ref, isFull, supported, toggle };
 }
 
-function PreviewFrame({ address, openUrl, children }: { address: React.ReactNode; openUrl?: string; children: React.ReactNode }) {
+function PreviewFrame({ address, openUrl, onRefresh, children }: { address: React.ReactNode; openUrl?: string; onRefresh?: () => void; children: React.ReactNode }) {
   const full = useFullscreen<HTMLDivElement>();
   return (
     <div ref={full.ref} className="preview-frame item-in flex min-h-full flex-col overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--panel)]">
@@ -104,6 +104,17 @@ function PreviewFrame({ address, openUrl, children }: { address: React.ReactNode
         <span className="h-2.5 w-2.5 rounded-full bg-[#3fb950]/60" />
         <span className="mono ml-3 min-w-0 truncate rounded bg-[var(--bg)] px-2 py-0.5 text-[11px] text-[var(--faint)]">{address}</span>
         <span className="ml-auto flex items-center gap-3">
+          {onRefresh && (
+            <button
+              className="text-[var(--faint)] hover:text-[var(--ink)]"
+              onClick={onRefresh}
+              type="button"
+              aria-label="Refresh preview"
+              title="Refresh"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+            </button>
+          )}
           {openUrl && (
             <a className="text-[var(--faint)] hover:text-[var(--ink)]" href={openUrl} target="_blank" rel="noopener noreferrer" aria-label="Open preview in a new tab" title="Open in a new tab">
               <ExternalLink className="h-3.5 w-3.5" />
@@ -180,7 +191,7 @@ function LiveApp({ fs, roomId, script, packageJson }: { fs: RoomFs; roomId: stri
       : state.phase === 'error' ? 'The app stopped' : 'Preparing…';
 
   return (
-    <PreviewFrame address={`npm run ${script}`}>
+    <PreviewFrame address={`npm run ${script}`} onRefresh={restart}>
       <div className="flex min-h-[400px] flex-1 flex-col gap-3 p-4">
         <div className="flex items-center gap-2 text-sm text-[var(--ink)]">
           {state.phase === 'error'
@@ -240,9 +251,11 @@ function SetupNeeded({ files, fs, title }: { files: FileMap; fs: RoomFs; title: 
 }
 
 function ServerPreview({ url }: { url: string }) {
+  // Remounting the iframe re-navigates it; a cross-origin frame can't be reloaded from here
+  const [run, setRun] = useState(0);
   return (
-    <PreviewFrame address={url} openUrl={url}>
-      <iframe className="min-h-[400px] w-full flex-1 bg-white" src={url} title="App preview" allow="cross-origin-isolated" />
+    <PreviewFrame address={url} openUrl={url} onRefresh={() => setRun(n => n + 1)}>
+      <iframe key={run} className="min-h-[400px] w-full flex-1 bg-white" src={url} title="App preview" allow="cross-origin-isolated" />
     </PreviewFrame>
   );
 }
@@ -250,6 +263,8 @@ function ServerPreview({ url }: { url: string }) {
 // The room's HTML rendered in a sandboxed frame (scripts run, but it can't reach the MUX page)
 function StaticPreview({ files, entryPage, roomId }: { files: FileMap; entryPage: string; roomId: string }) {
   const [page, setPage] = useState(entryPage);
+  // Every refresh remounts the frame, so scripts and CSS re-run from the current files
+  const [run, setRun] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
   // Errors the page throws, sent to the room a moment later in one report (the server turns them into a
   // fix task for the coder). Each error is sent once per version of the page.
@@ -308,9 +323,18 @@ function StaticPreview({ files, entryPage, roomId }: { files: FileMap; entryPage
   ) : current;
 
   return (
-    <PreviewFrame address={address}>
+    <PreviewFrame
+      address={address}
+      onRefresh={() => {
+        // Fresh run of the page: clear what was reported last time so the new run reports cleanly
+        pending.current = [];
+        reported.current.clear();
+        setRun(n => n + 1);
+      }}
+    >
       <iframe
         ref={frame}
+        key={run}
         className="min-h-[400px] w-full flex-1 bg-white"
         srcDoc={html}
         sandbox="allow-scripts allow-forms allow-modals allow-popups"

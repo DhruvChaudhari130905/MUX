@@ -5,6 +5,7 @@ import type { Message, User } from '@/types';
 import { LabelChip } from './LabelChip';
 import { ReactionBar, ReactionChips } from './Reactions';
 import { MessageImage } from './MessageImage';
+import { splitMentions, type MentionMember } from '@/lib/mentions';
 import { format } from 'date-fns';
 
 interface FeedItemProps {
@@ -22,6 +23,11 @@ export function FeedItem({ message, currentUser, roomId, canReact, memberNames }
   const isNote = message.to === 'team';
   // Only people's messages have server ids that reactions can point at
   const reactable = !isBot;
+  const members = React.useMemo(
+    () => Object.entries(memberNames ?? {}).map(([id, name]) => ({ id, name }) as MentionMember),
+    [memberNames],
+  );
+  const segments = React.useMemo(() => splitMentions(message.text, members), [message.text, members]);
 
   return (
     <div className={`msg ${isNote ? 'note' : ''}${reactable && canReact ? ' reactable' : ''}`}>
@@ -43,7 +49,19 @@ export function FeedItem({ message, currentUser, roomId, canReact, memberNames }
             !isBot && <span className="chip pending">waiting for coordinator</span>
           )}
         </div>
-        {message.text && <p className="whitespace-pre-wrap">{message.text}</p>}
+        {message.text && (
+          <p className="whitespace-pre-wrap">
+            {segments.map((s, i) =>
+              s.mention ? (
+                <span key={i} className="mention">
+                  {s.text}
+                </span>
+              ) : (
+                <React.Fragment key={i}>{s.text}</React.Fragment>
+              ),
+            )}
+          </p>
+        )}
         {message.attachments && message.attachments.length > 0 && (
           <div className="msg-photos">
             {message.attachments.map(id => <MessageImage key={id} roomId={roomId} uploadId={id} />)}

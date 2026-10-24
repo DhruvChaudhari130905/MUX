@@ -313,6 +313,7 @@ export type EventType =
   | 'plan.approved'
   | 'plan.item_added'
   | 'plan.item_updated'
+  | 'plan.item_removed'
   | 'coordinator.reply'
   | 'conflict.opened'
   | 'conflict.evidence'
@@ -380,6 +381,11 @@ export interface PlanItemAddedEvent extends BaseEvent {
 export interface PlanItemUpdatedEvent extends BaseEvent {
   type: 'plan.item_updated';
   payload: { id: string; changes: Partial<PlanItem> };
+}
+
+export interface PlanItemRemovedEvent extends BaseEvent {
+  type: 'plan.item_removed';
+  payload: { item_id: string };
 }
 
 export interface ConflictOpenedEvent extends BaseEvent {
@@ -494,6 +500,7 @@ type TypedEventType =
   | 'message.reacted'
   | 'plan.item_added'
   | 'plan.item_updated'
+  | 'plan.item_removed'
   | 'conflict.opened'
   | 'conflict.vote'
   | 'conflict.closed'
@@ -552,6 +559,7 @@ export type AppEvent =
   | MessageReactedEvent
   | PlanItemAddedEvent
   | PlanItemUpdatedEvent
+  | PlanItemRemovedEvent
   | ConflictOpenedEvent
   | ConflictVoteEvent
   | ConflictClosedEvent

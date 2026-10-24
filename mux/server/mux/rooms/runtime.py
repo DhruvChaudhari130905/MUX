@@ -505,7 +505,12 @@ class RoomRuntime:
         if state.parked and answer == SKIP:
             return  # the task stays skipped
         notes = "retrying" if state.parked else f"answer: {answer}"
-        await self.actor.update_plan_item(state.task_id, {"status": "todo", "notes": notes}, CODER)
+        if state.task_id is not None:
+            try:
+                await self.actor.update_plan_item(state.task_id, {"status": "todo", "notes": notes}, CODER)
+            except ValueError:
+                # The task was deleted while its question was open: the answer is moot
+                return
         if not state.parked:
             await self.actor.enqueue_message("merge", f"The room answered \"{answer}\"", user_id=COORDINATOR)
         self._wake.set()
@@ -531,7 +536,15 @@ class RoomRuntime:
         self._current_task = task_id
         self._current_kind = item.get("kind")
         self._task_requesters = set(item.get("requested_by") or [])
-        await self.actor.update_plan_item(task_id, {"status": "doing"}, CODER)
+        try:
+            await self.actor.update_plan_item(task_id, {"status": "doing"}, CODER)
+        except ValueError:
+            # The room deleted this task in the window between picking it up and starting it:
+            # the room's delete wins, the coder moves on to the next task
+            self._current_task = None
+            self._current_kind = None
+            self._task_requesters = set()
+            return
         asked: list[str] = []
 
         async def on_question(card: dict[str, Any]) -> None:
