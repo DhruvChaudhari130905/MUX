@@ -41,6 +41,7 @@ export default function RoomPage() {
   const currentUserRef = useRef(currentUser);
   currentUserRef.current = currentUser;
   const [activeTab, setActiveTab] = useState<'preview' | 'code'>('preview');
+  const draftPlanWasVisible = useRef(false);
   // Side columns can be collapsed to give Preview/Code more room; remembered per browser
   const [panels, setPanels] = useState({ feed: true, side: true, timeline: true });
   useEffect(() => {
@@ -57,11 +58,15 @@ export default function RoomPage() {
   const [fileVersions, setFileVersions] = useState<Map<string, number>>(new Map());
   const [lockedFiles, setLockedFiles] = useState<Set<string>>(new Set());
   const [lockingUser, setLockingUser] = useState<Map<string, string>>(new Map());
-  const [isRewound, setIsRewound] = useState(false);
-  const [currentCheckpoint, setCurrentCheckpoint] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Set when the server won't let this user in (private room, no invite): shown instead of the room
   const [accessError, setAccessError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const hasDraftPlan = !!state?.plan.some(item => item.status === 'draft');
+    if (hasDraftPlan && !draftPlanWasVisible.current) setActiveTab('preview');
+    draftPlanWasVisible.current = hasDraftPlan;
+  }, [state?.plan]);
 
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
 
@@ -239,7 +244,7 @@ export default function RoomPage() {
       );
       // "Plan it with me": start once the agents can read every file
       if (imported.kickoff) {
-        void Promise.allSettled(saves).then(() => api.kickoff(roomId))
+        void Promise.allSettled(saves).then(() => api.kickoff(roomId, room?.description || `Review and improve the imported project “${imported.name}”.`))
           .catch(error => alert(error instanceof Error ? `Planning didn't start: ${error.message}` : "Planning didn't start"));
       }
     }
@@ -463,11 +468,21 @@ export default function RoomPage() {
     }
   }, [roomId]);
 
-  const handleKickoff = useCallback(async () => {
+  const handleKickoff = useCallback(async (brief: string) => {
     try {
-      await api.kickoff(roomId);
+      await api.kickoff(roomId, brief);
     } catch (error) {
-      alert(error instanceof Error ? `Planning didn't start: ${error.message}` : "Planning didn't start");
+      throw new Error(error instanceof Error ? error.message : "Planning didn't start");
+    }
+  }, [roomId]);
+
+  const handlePlanReorder = useCallback(async (itemIds: string[]) => {
+    if (!roomId) return;
+    try {
+      await api.reorderPlan(roomId, itemIds);
+    } catch (error) {
+      alert(`Could not reorder the plan: ${error instanceof Error ? error.message : 'please try again'}`);
+      throw error;
     }
   }, [roomId]);
 
@@ -496,8 +511,6 @@ export default function RoomPage() {
     if (!roomId) return;
     try {
       await api.rewind(roomId, checkpointId);
-      setIsRewound(true);
-      setCurrentCheckpoint(checkpointId);
     } catch (error) {
       console.error('Failed to rewind:', error);
     }
@@ -522,10 +535,15 @@ export default function RoomPage() {
     return () => { unsubscribe(); };
   }, [room, currentUser, togglePanel]);
 
-  const handleReturnToLatest = useCallback(() => {
-    setIsRewound(false);
-    setCurrentCheckpoint(null);
-  }, []);
+  const handleReturnToLatest = useCallback(async () => {
+    if (!roomId || !state?.return_checkpoint_id) return;
+    try {
+      await api.restoreCheckpoint(roomId, state.return_checkpoint_id);
+    } catch (error) {
+      console.error('Failed to restore the saved present:', error);
+      alert(`Could not return to the saved present: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId, state?.return_checkpoint_id]);
 
   if (accessError) {
     return (
@@ -636,19 +654,23 @@ export default function RoomPage() {
             onOverride={handleOverride}
             onAnswer={handleAnswer}
             onPlanUpdate={handlePlanUpdate}
+            onPlanReorder={handlePlanReorder}
             onPlanApprove={handlePlanApprove}
             onPlanRun={handlePlanRun}
             onKickoff={handleKickoff}
+            roomDescription={room.description}
           />
         </main>
         <NotificationToasts />
 
         <Timeline
           checkpoints={state.checkpoints}
-          currentCheckpoint={currentCheckpoint}
+          currentCheckpoint={state.active_checkpoint_id}
           onSelectCheckpoint={handleRewind}
           onReturnToLatest={handleReturnToLatest}
-          isRewound={isRewound}
+          isRewound={!!state.return_checkpoint_id}
+          activeCheckpointId={state.active_checkpoint_id}
+          returnCheckpointId={state.return_checkpoint_id}
           collapsed={!panels.timeline}
           onToggle={open => togglePanel('timeline', open)}
         />

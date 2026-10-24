@@ -38,9 +38,11 @@ interface SidePanelProps {
   onOverride: (conflictId: string, option: string) => void;
   onAnswer: (questionId: string, answer: string) => void;
   onPlanUpdate: (items: PlanItem[]) => void;
+  onPlanReorder: (itemIds: string[]) => Promise<void> | void;
   onPlanApprove: () => void;
   onPlanRun: () => void;
-  onKickoff: () => void;
+  roomDescription: string;
+  onKickoff: (brief: string) => Promise<void> | void;
   // Hidden (still mounted) while collapsed to its rail
   collapsed?: boolean;
   onCollapse?: () => void;
@@ -56,9 +58,11 @@ export function SidePanel({
   onOverride,
   onAnswer,
   onPlanUpdate,
+  onPlanReorder,
   onPlanApprove,
   onPlanRun,
   onKickoff,
+  roomDescription,
   collapsed,
   onCollapse,
 }: SidePanelProps) {
@@ -118,9 +122,11 @@ export function SidePanel({
             canEdit={currentUserRole !== 'viewer'}
             canApprove={currentUserRole === 'owner'}
             onUpdate={onPlanUpdate}
+            onReorder={onPlanReorder}
             onApprove={onPlanApprove}
             onRun={onPlanRun}
             onKickoff={onKickoff}
+            initialBrief={roomDescription}
           />
         </div>
       </div>

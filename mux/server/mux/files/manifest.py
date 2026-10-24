@@ -35,6 +35,7 @@ class FileManifest:
         self._entries: Dict[str, FileEntry] = {}  # path -> FileEntry
         self._by_id: Dict[str, FileEntry] = {}    # file_id -> FileEntry
         self._checkpoints: Dict[str, Dict[str, Any]] = {}  # checkpoint_id -> checkpoint_data
+        self.active_checkpoint_id: Optional[str] = None
         self._export_history: List[Dict[str, Any]] = []    # export history records
         self._room_metadata: Dict[str, Any] = {}           # room name, description
         self._high_water: Dict[str, int] = {}              # path -> highest version ever issued
@@ -95,6 +96,11 @@ class FileManifest:
     def add_checkpoint(self, checkpoint_id: str, checkpoint_data: Dict[str, Any]) -> None:
         """Store a checkpoint."""
         self._checkpoints[checkpoint_id] = checkpoint_data
+        self.active_checkpoint_id = checkpoint_id
+
+    def set_active_checkpoint(self, checkpoint_id: Optional[str]) -> None:
+        """Move the room's working branch head without deleting other checkpoints."""
+        self.active_checkpoint_id = checkpoint_id
 
     def get_checkpoint(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a checkpoint."""

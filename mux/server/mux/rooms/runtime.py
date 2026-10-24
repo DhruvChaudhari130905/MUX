@@ -42,12 +42,17 @@ from mux.agents.coordinator.planner import create_plan, next_task_id
 from mux.agents.coordinator.prompts import Message, PlanItem, RoomView
 from mux.agents.coordinator.schema import CoordinatorAction, Domain, DomainRole, OpenConflict
 from mux.agents.llm import LLM, ModelError, Usage
+from mux.memory.day_log import write_day_log
+from mux.memory.pins import pin_override, pin_vote
+from mux.memory.store import RoomMemoryStore
+from mux.memory.task_log import write_task_log
 from mux.events.models import (
     BaseEvent,
     CommandAnswerQuestionEvent,
     CommandVoteEvent,
     ConflictResolvedEvent,
     EventType,
+    KickoffRequestedEvent,
     QuestionAnsweredEvent,
     UserMessageSentEvent,
 )
@@ -112,6 +117,7 @@ class RoomRuntime:
     ) -> None:
         self.actor = actor
         self.llm = llm
+        self.memory = RoomMemoryStore(actor.room_id)
         self.search = search
         self.runner = runner  # the sandbox for run_build / run_tests; None: the coder isn't offered them
         self.conventions = conventions
@@ -183,11 +189,11 @@ class RoomRuntime:
     def kickoff_running(self) -> bool:
         return self._kickoff_task is not None and not self._kickoff_task.done()
 
-    async def _kickoff(self) -> None:
+    async def _kickoff(self, brief: str | None = None) -> None:
         """"Plan it with me": understand the project, ask the team, draft a plan (spec 2026-10-10)."""
         try:
             meta = self.actor.manifest.get_room_metadata()
-            description = (meta.get("description") or meta.get("name") or "").strip()
+            description = (brief or meta.get("description") or meta.get("name") or "").strip()
             summary = description
             if await self.actor.list_files():
                 await self._step("Reading your project…")
@@ -294,6 +300,9 @@ class RoomRuntime:
 
     async def _handle(self, event: BaseEvent) -> None:
         t = event.type
+        if t == EventType.SITTING_ENDED:
+            await self._finish_sitting()
+            return
         if t == EventType.ROOM_AI_SETTINGS_SAVED:
             self._resume()  # approved tasks waiting for a model can start
             return
@@ -302,7 +311,8 @@ class RoomRuntime:
         if t == EventType.KICKOFF_REQUESTED:
             self._stuck = None  # the owner asked again: try the model (the coder waits until it answers)
             if not self.kickoff_running:
-                self._kickoff_task = asyncio.create_task(self._kickoff())
+                event = cast(KickoffRequestedEvent, event)
+                self._kickoff_task = asyncio.create_task(self._kickoff(event.brief) if event.brief is not None else self._kickoff())
             return
         if t == EventType.USER_MESSAGE_SENT:
             e = cast(UserMessageSentEvent, event)
@@ -443,6 +453,11 @@ class RoomRuntime:
             return
         if state.timer is not None:
             state.timer.cancel()
+        if event.resolved_by == "vote":
+            result = tally(state.options, state.votes, state.domain, self.actor.owner_id)
+            self.memory.queue_pin(pin_vote(event.conflict_id, state.summary, result))
+        else:
+            self.memory.queue_pin(pin_override(event.conflict_id, state.summary, event.resolution))
         # The coder picks the decision up at its next turn boundary
         await self.actor.enqueue_message(
             "merge", f"The room decided \"{event.resolution}\" on: {state.summary}", user_id=COORDINATOR,
@@ -525,6 +540,7 @@ class RoomRuntime:
         kind = item.get("kind")
         review = kind in ("review", "understand")  # read-only tasks: no write tools, no MCP, no checkpoint
         outcome: tuple[str, str] = ("stopped", "")
+        changes: list[str] = []
         scope = review_scope(await self.actor.list_files()) if kind == "review" else None
         skills = self._skills()
         files = ActorFileTools(self.actor, on_behalf_of=lambda: sorted(self._task_requesters), task_id=task_id)
@@ -543,7 +559,7 @@ class RoomRuntime:
             # A review is read-only, and MCP tools can change things elsewhere, so it gets none
             servers = [] if review else enabled_servers(self.actor)
             async with McpToolset(executor, servers, ask=ask_first, on_unavailable=unavailable) as toolset:
-                loop = CoderLoop(self.llm, _Narrated(self.actor, toolset), _Boundary(self.actor), toolset.schemas(),
+                loop = CoderLoop(self.llm, _Narrated(self.actor, toolset, on_change=changes.append), _Boundary(self.actor), toolset.schemas(),
                                  max_turns=max(self.max_turns, REVIEW_MAX_TURNS) if kind == "review" else self.max_turns,
                                  on_text_delta=self._delta(task_id), on_usage=lambda usage: self._spend(usage, CODER))
                 result = await loop.run_task(CoderTask(task_id, item["title"]), await self._context(item, executor.can_build, kind=kind, skills=skills))
@@ -553,13 +569,14 @@ class RoomRuntime:
                 await self.actor.update_plan_item(task_id, {"status": "skipped_question"}, CODER)
             elif result.status == "done":
                 await self.actor.update_plan_item(task_id, {"status": "done"}, CODER)
-                if not review:  # a review changes nothing, so there's nothing to checkpoint
-                    await self.actor.create_checkpoint(CODER, f"After: {item['title']}")
-                    await self._check_code()
             elif "interrupted" in result.summary:
                 await self.actor.update_plan_item(task_id, {"status": "todo", "notes": "re-planning after an interrupt"}, CODER)
             else:
                 await self._park(item, result.summary)
+            await self._record_task_memory(item, result.status, result.summary, changes)
+            if not asked and result.status == "done" and not review:
+                await self.actor.create_checkpoint(CODER, f"After: {item['title']}")
+                await self._check_code()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -671,6 +688,7 @@ class RoomRuntime:
                 {"review": REVIEW_SYSTEM_PROMPT, "understand": UNDERSTAND_SYSTEM_PROMPT}.get(kind or "")
                 or coder_system_prompt(can_build), skills_prompt(skills or {})) if p),
             conventions=self.conventions,
+            room_log=self.memory.current_log.body if self.memory.current_log else "",
             plan="" if kind == "review" else "\n".join(f"- [{p['id']}] {p['title']} ({p['status']})" for p in plan),
             current_task=f"[{item['id']}] {task}",
             repo_map="\n".join(files) or "(no files yet)",
@@ -693,6 +711,37 @@ class RoomRuntime:
     async def _plan_items(self) -> list[PlanItem]:
         return [PlanItem(i["id"], i["title"], i["status"], i.get("owner_role"), i.get("notes"))
                 for i in await self.actor.get_plan()]
+
+    async def _record_task_memory(self, item: dict[str, Any], status: str, summary: str,
+                                  changes: list[str]) -> None:
+        """Roll the room log forward after an agent task has returned."""
+        try:
+            task_changes = [*changes, f"Task result ({status}): {summary[:500]}"]
+            task = PlanItem(item["id"], item["title"], status, item.get("owner_role"), item.get("notes"))
+            result = await write_task_log(
+                self.llm, self.memory.current_log, task, task_changes, await self._plan_items(),
+                new_pins=self.memory.pending_pins,
+            )
+            self.memory.save_task_log(result.log)
+            await self._spend(result.usage, CODER)
+        except Exception:
+            logger.exception("Room %s: couldn't update the task memory log", self.actor.room_id)
+
+    async def _finish_sitting(self) -> None:
+        """Compact task logs at the end of a sitting and persist the new room summary."""
+        if not self.memory.task_logs:
+            return
+        try:
+            if self._model_available():
+                result = await write_day_log(self.llm, self.memory.day_log, self.memory.task_logs)
+                log = result.log
+                self.memory.save_day_log(log)
+                await self._spend(result.usage, CODER)
+            else:
+                log = self.memory.task_logs[-1]
+                self.memory.save_day_log(log)
+        except Exception:
+            logger.exception("Room %s: couldn't compact the sitting memory log", self.actor.room_id)
 
     def _domain_role(self, user_id: str) -> Optional[DomainRole]:
         role = self.actor.domain_roles.get(user_id)
@@ -752,9 +801,11 @@ class _Boundary:
 class _Narrated:
     """Wraps the tool executor so each call shows in the feed as tool.called / tool.result (and build.result)."""
 
-    def __init__(self, actor: RoomActor, inner: ToolExecutor) -> None:
+    def __init__(self, actor: RoomActor, inner: ToolExecutor,
+                 on_change: Optional[Callable[[str], None]] = None) -> None:
         self.actor = actor
         self.inner = inner
+        self.on_change = on_change
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         shown = {k: v for k, v in arguments.items() if k not in ("content", "edits")}  # summaries only
@@ -768,6 +819,9 @@ class _Narrated:
             await self.actor.post_notice("skill.used", {"name": result.get("name")}, CODER)
         ok = bool(result.get("ok", True)) if isinstance(result, dict) else True
         summary = _summary(name, result)
+        if ok and name in {"write_file", "edit_file", "delete_file", "add_image"} and self.on_change is not None:
+            path = str(result.get("path") or shown.get("path") or "(path unavailable)") if isinstance(result, dict) else "(path unavailable)"
+            self.on_change(f"{name}: {path}")
         await self.actor.post_notice("tool.result", {"tool": name, "summary": summary, "ok": ok}, CODER)
         if name == "run_build" and isinstance(result, dict):
             await self.actor.post_notice("build.result", {

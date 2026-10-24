@@ -12,6 +12,7 @@ import {
 import { projectKind, viteSetupFiles } from '@/lib/projectKind';
 import { buildStaticPage, findEntryPage, htmlPages, resolveRef } from '@/lib/staticPreview';
 import type { FileMap } from './FileTree';
+import { PlanPreview } from './PlanPreview';
 
 interface PreviewProps {
   files: FileMap;
@@ -51,6 +52,9 @@ export function Preview({ files, fs, roomId, title, description, plan }: Preview
 
   const entryPage = useMemo(() => findEntryPage(files), [files]);
   const project = useMemo(() => projectKind(files), [files]);
+  const hasDraftPlan = plan.some(item => item.status === 'draft');
+
+  if (hasDraftPlan) return <PlanPreview plan={plan} title={title} description={description} />;
 
   if (buildStatus === 'building') {
     return (

@@ -148,6 +148,37 @@ class TestRoomActorPlanManagement:
         items = await actor.get_plan()
         assert items[0]["status"] == "done"
 
+    @pytest.mark.asyncio
+    async def test_reorder_moves_only_draft_and_upcoming_tasks(self, actor):
+        await actor.start()
+        items = [
+            {"id": "t1", "title": "Done", "status": "done"},
+            {"id": "t2", "title": "First todo", "status": "todo"},
+            {"id": "t3", "title": "In progress", "status": "doing"},
+            {"id": "t4", "title": "Draft", "status": "draft"},
+            {"id": "t5", "title": "Stopped", "status": "skipped_question"},
+            {"id": "t6", "title": "Second todo", "status": "todo"},
+        ]
+        for item in items:
+            await actor.add_plan_item(item, "owner")
+
+        await actor.reorder_plan(["t4", "t6", "t2"], "editor")
+
+        result = await actor.get_plan()
+        assert [item["id"] for item in result] == ["t1", "t4", "t3", "t6", "t5", "t2"]
+        assert [result[index]["status"] for index in (0, 2, 4)] == ["done", "doing", "skipped_question"]
+
+    @pytest.mark.asyncio
+    async def test_reorder_rejects_stale_task_ids_without_changing_plan(self, actor):
+        await actor.start()
+        await actor.add_plan_item({"id": "t1", "title": "One", "status": "todo"}, "owner")
+        await actor.add_plan_item({"id": "t2", "title": "Two", "status": "todo"}, "owner")
+
+        with pytest.raises(ValueError, match="task list changed"):
+            await actor.reorder_plan(["t2"], "editor")
+
+        assert [item["id"] for item in await actor.get_plan()] == ["t1", "t2"]
+
 
 class TestRoomActorInboxProcessing:
     """Tests for inbox message handling at turn boundaries."""

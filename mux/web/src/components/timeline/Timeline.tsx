@@ -11,6 +11,8 @@ interface TimelineProps {
   onSelectCheckpoint: (checkpointId: string) => void;
   onReturnToLatest: () => void;
   isRewound: boolean;
+  activeCheckpointId: string | null;
+  returnCheckpointId: string | null;
   // Collapsed, only the header row shows and Preview/Code gets the height
   collapsed?: boolean;
   onToggle?: (open: boolean) => void;
@@ -22,10 +24,19 @@ export function Timeline({
   onSelectCheckpoint,
   onReturnToLatest,
   isRewound,
+  activeCheckpointId,
+  returnCheckpointId,
   collapsed,
   onToggle,
 }: TimelineProps) {
   const sortedCheckpoints = [...checkpoints].sort((a, b) => a.seq - b.seq);
+  const byId = new Map(checkpoints.map(checkpoint => [checkpoint.id, checkpoint]));
+  const activeBranch = new Set<string>();
+  let branchNode = activeCheckpointId ? byId.get(activeCheckpointId) : undefined;
+  while (branchNode && !activeBranch.has(branchNode.id)) {
+    activeBranch.add(branchNode.id);
+    branchNode = branchNode.parent_id ? byId.get(branchNode.parent_id) : undefined;
+  }
 
   return (
     <footer className={`timeline${collapsed ? ' collapsed' : ''}`}>
@@ -34,8 +45,10 @@ export function Timeline({
         {collapsed && <span>{sortedCheckpoints.length} checkpoint{sortedCheckpoints.length === 1 ? '' : 's'}</span>}
         {isRewound && (
           <>
-            <span className="note">Viewing checkpoint {currentCheckpoint}. Later work is greyed out, not deleted.</span>
-            <button className="btn" onClick={onReturnToLatest} type="button">Return to latest</button>
+            <span className="note">Viewing a saved branch. Later checkpoints remain available.</span>
+            <button className="btn" onClick={onReturnToLatest} type="button">
+              Return to saved present
+            </button>
           </>
         )}
         {onToggle && (
@@ -60,24 +73,25 @@ export function Timeline({
           )}
           {sortedCheckpoints.map((checkpoint, index) => {
             const isCurrent = checkpoint.id === currentCheckpoint;
-            const isFuture = !!currentCheckpoint && sortedCheckpoints.findIndex(c => c.id === currentCheckpoint) !== -1 && index > sortedCheckpoints.findIndex(c => c.id === currentCheckpoint);
-            const isLatest = index === sortedCheckpoints.length - 1;
+            const isArchived = !activeBranch.has(checkpoint.id);
+            const isLatest = checkpoint.id === activeCheckpointId;
 
             return (
               <button
                 key={checkpoint.id}
-                className={`timeline-node ${isCurrent ? 'now' : ''} ${isLatest && !isRewound ? 'live' : ''} ${isFuture ? 'greyed' : ''}`}
-                onClick={() => !isFuture && onSelectCheckpoint(checkpoint.id)}
-                disabled={isFuture}
+                className={`timeline-node ${isCurrent ? 'now' : ''} ${isLatest ? 'live' : ''} ${isArchived ? 'archived' : ''} ${checkpoint.id === returnCheckpointId ? 'return-point' : ''}`}
+                onClick={() => onSelectCheckpoint(checkpoint.id)}
                 type="button"
                 data-i={index}
               >
                 <span className="pt">{index}</span>
                 <span className="lb">
-                  {checkpoint.plan[checkpoint.plan.length - 1]?.title || `Checkpoint ${index}`}
+                  {checkpoint.plan[checkpoint.plan.length - 1]?.title || checkpoint.description || `Checkpoint ${index}`}
                   <small>
                     {format(new Date(checkpoint.created_at), 'HH:mm')}
                     {checkpoint.sandbox_snapshot_uuid && ' · Nebius'}
+                    {checkpoint.id === returnCheckpointId && ' · saved present'}
+                    {isArchived && ' · other branch'}
                   </small>
                 </span>
               </button>

@@ -445,6 +445,10 @@ function rememberSent(event: AppEvent) {
   }
 }
 
+export function rememberDemoEvent(event: AppEvent) {
+  rememberSent(event);
+}
+
 export function demoRoomEvents(roomId: string): AppEvent[] {
   // History first, then everything the user said in this room before
   const sent = loadSent(roomId);

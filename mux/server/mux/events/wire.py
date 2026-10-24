@@ -269,14 +269,22 @@ def _payload(event: BaseEvent) -> Optional[tuple[str, dict[str, Any]]]:
         return "checkpoint.created", {
             # The checkpoint captures the state up to the event before it; rewinding to it keeps it (seq <= target)
             "id": e.checkpoint_id, "room_id": room, "seq": e.sequence - 1, "manifest_id": "",
-            "sandbox_snapshot_uuid": None, "plan": [], "task_log_id": "", "parent_id": None,
+            "sandbox_snapshot_uuid": None, "plan": [], "task_log_id": "", "parent_id": e.parent_id,
             "created_at": ts, "description": e.description,
         }
     if t == EventType.COMMAND_REWIND:
-        return "room.rewound", {"checkpoint_id": None, "seq": cast(CommandRewindEvent, event).target_sequence}
+        e = cast(CommandRewindEvent, event)
+        return "room.rewound", {
+            "checkpoint_id": e.target_checkpoint_id, "seq": e.target_sequence,
+            "return_checkpoint_id": e.return_checkpoint_id,
+            "plan": e.plan, "files": e.files,
+        }
     if t == EventType.CHECKPOINT_RESTORED:
         e = cast(CheckpointRestoredEvent, event)
-        return "room.rewound", {"checkpoint_id": e.checkpoint_id, "seq": e.restore_point}
+        return "room.rewound", {
+            "checkpoint_id": e.checkpoint_id, "seq": e.restore_point,
+            "plan": e.plan, "files": e.files,
+        }
 
     if t in (EventType.BUDGET_EXCEEDED, EventType.BUDGET_RESUMED):
         e = cast(BudgetExceededEvent, event)

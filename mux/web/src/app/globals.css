@@ -375,9 +375,12 @@ input:focus-visible {
   color: var(--coder);
 }
 
-.timeline-node.greyed {
+.timeline-node.archived {
   opacity: .35;
 }
+
+.timeline-node.archived:hover { opacity: .8; }
+.timeline-node.return-point .pt { border-color: var(--ask); color: var(--ask); }
 
 .timeline-node:hover .lb {
   color: var(--ink);

@@ -22,6 +22,8 @@ export function createEmptyState(): RoomState {
     questions: [],
     files: new Map(),
     checkpoints: [],
+    active_checkpoint_id: null,
+    return_checkpoint_id: null,
     budget: { tokens_used: 0, runs_used: 0, tokens_cap: 2000000, runs_cap: 100 },
     presence: [],
     current_user: { id: '', email: '', name: '', initials: '', color: '' },
@@ -237,14 +239,31 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
       break;
     }
     case 'checkpoint.created': {
-      newState.checkpoints = [...newState.checkpoints, event.payload];
+      const checkpoint = {
+        ...event.payload,
+        // Existing event logs have no parent_id; infer the previous active checkpoint during replay.
+        parent_id: event.payload.parent_id ?? newState.active_checkpoint_id,
+      };
+      newState.checkpoints = [...newState.checkpoints, checkpoint];
       newState.room.head_checkpoint_id = event.payload.id;
+      newState.active_checkpoint_id = event.payload.id;
       break;
     }
     case 'room.rewound': {
-      // After rewind, events after the checkpoint are greyed out (active = false)
-      // For client state, we can filter or mark them
-      newState.checkpoints = newState.checkpoints.filter(c => c.seq <= event.payload.seq);
+      // Keep every checkpoint: later checkpoints remain available on their original branch.
+      const targetCheckpointId = event.payload.checkpoint_id ?? [...newState.checkpoints]
+        .filter(checkpoint => checkpoint.seq <= event.payload.seq)
+        .sort((a, b) => b.seq - a.seq)[0]?.id ?? null;
+      newState.active_checkpoint_id = targetCheckpointId;
+      newState.room.head_checkpoint_id = targetCheckpointId;
+      if (event.payload.plan) newState.plan = event.payload.plan;
+      if (event.payload.files) newState.files = new Map(Object.entries(event.payload.files));
+      if (Object.prototype.hasOwnProperty.call(event.payload, 'return_checkpoint_id')) {
+        newState.return_checkpoint_id = event.payload.return_checkpoint_id ?? null;
+      } else if (newState.return_checkpoint_id === targetCheckpointId) {
+        // Restoring the saved pre-rewind state finishes the return-to-present operation.
+        newState.return_checkpoint_id = null;
+      }
       break;
     }
     case 'budget.updated': {

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,12 +20,15 @@ from mux.agents.llm import LLMReply, ToolCall, Usage
 from mux.events.log import InMemoryEventLog
 from mux.events.models import AgentNoticeEvent, BaseEvent, EventType
 from mux.events.wire import to_envelope
+from mux.memory.store import RoomMemoryStore
+from mux.memory.task_log import Log, LogDraft
 from mux.replay.fake_llm import FakeLLM
 from mux.rooms.actor import RoomActor
 from mux.rooms.registry import RoomRegistry
 from mux.rooms.runtime import RETRY, SKIP, RoomRuntime
 
 PLAN = [{"id": "t1", "title": "Booking page", "status": "draft"}]
+MEMORY_LOG = json.dumps({"app": "Project.", "changed": [], "open_threads": [], "conventions": []})
 
 
 @pytest.fixture
@@ -284,7 +288,8 @@ async def test_run_plan_retries_every_stopped_task(setup):
     await runtimes[0]._ask("Which colour?", ["Red", "Blue"], "Red", "t3", parked=False)
     await actor.add_plan_item({"id": "t3", "title": "Theme", "status": "skipped_question"}, "alice")
 
-    llm.push(tool_reply(("finish_task", {"summary": "t1 done"})), tool_reply(("finish_task", {"summary": "t2 done"})))
+    llm.push(tool_reply(("finish_task", {"summary": "t1 done"})), MEMORY_LOG,
+             tool_reply(("finish_task", {"summary": "t2 done"})), MEMORY_LOG)
     assert await runtimes[0].run_stopped("alice") == 2
     await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
     assert [(p["id"], p["status"]) for p in await actor.get_plan()] == [
@@ -306,7 +311,7 @@ async def test_errors_left_after_a_task_become_a_fix_task_the_coder_runs(setup):
     fixed = tool_reply(("write_file", {"path": "missing.js", "content": "export default 1;\n"}),
                        ("finish_task", {"summary": "fixed the import"}))
     llm.push(broken, tool_reply(("finish_task", {"summary": "done now"})),
-             tool_reply(("finish_task", {"summary": "really done"})), fixed)
+             tool_reply(("finish_task", {"summary": "really done"})), MEMORY_LOG, fixed)
     await actor.approve_plan_items(["t1"], "alice")
     await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
     plan = await actor.get_plan()
@@ -576,7 +581,8 @@ async def test_out_of_credit_pauses_the_coder_until_the_settings_change(switchab
 
     # A new key (or funds added, then Run plan) and the queue carries on
     llm.error = None
-    llm.push(tool_reply(("finish_task", {"summary": "one"})), tool_reply(("finish_task", {"summary": "two"})))
+    llm.push(tool_reply(("finish_task", {"summary": "one"})), MEMORY_LOG,
+             tool_reply(("finish_task", {"summary": "two"})), MEMORY_LOG)
     await actor.save_ai_settings("openai", "https://api.example.com/v1", "ENC", {"lightning": "a", "super": "b", "ultra": "b"}, "alice")
     await until(lambda: len(of_type(log, EventType.CHECKPOINT_CREATED)) == 2)
     await registry.shutdown_all()
@@ -687,6 +693,7 @@ async def test_kickoff_reads_an_imported_project_first(setup):
     llm.push(
         tool_reply(("read_file", {"path": "src/App.jsx"})),
         tool_reply(("finish_task", {"summary": "A shop app with one empty page; no cart yet."})),
+        MEMORY_LOG,
         two_questions(),
         PlanDraft(tasks=[{"title": "Add a cart"}]),  # type: ignore[list-item]
     )
@@ -697,7 +704,8 @@ async def test_kickoff_reads_an_imported_project_first(setup):
     assert understand["status"] == "done"
     coder_tools = {t["function"]["name"] for t in next(c for c in llm.calls if c.tools).tools or []}
     assert "write_file" not in coder_tools
-    questions_prompt = "\n".join(m["content"] for m in llm.calls[2].messages)
+    questions_call = next(call for call in llm.calls if call.schema and call.schema.__name__ == "KickoffQuestions")
+    questions_prompt = "\n".join(m["content"] for m in questions_call.messages)
     assert "A shop app with one empty page" in questions_prompt
     assert kickoff_steps(log)[0] == "Reading your project…"
     assert not of_type(log, EventType.CHECKPOINT_CREATED)
@@ -733,6 +741,24 @@ async def test_kickoff_without_usable_questions_still_plans(setup):
 
 
 @pytest.mark.asyncio
+async def test_kickoff_uses_the_submitted_brief(setup):
+    from mux.agents.coordinator.schema import PlanDraft
+    registry, llm, logs, _ = setup
+    actor = await new_room(registry, llm, logs, plan=None)
+    log = logs[actor.room_id]
+    brief = "Build a shared kitchen inventory for a four-person household."
+    llm.push("not json", "still not json", PlanDraft(tasks=[{"title": "Inventory overview"}]))  # type: ignore[list-item]
+
+    await actor.request_kickoff("alice", brief)
+    await until(lambda: any("Plan drafted" in step for step in kickoff_steps(log)))
+
+    planner_prompt = "\n".join(message["content"] for message in llm.calls[-1].messages)
+    assert f"App description:\n{brief}" in planner_prompt
+    assert "Yoga booking" not in planner_prompt
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
 async def test_a_failed_understand_task_falls_back_to_the_description(setup):
     from mux.agents.coordinator.schema import PlanDraft
     registry, llm, logs, _ = setup
@@ -740,7 +766,8 @@ async def test_a_failed_understand_task_falls_back_to_the_description(setup):
     log = logs[actor.room_id]
     await actor.create_file("a.js", "x", "alice")
     # max_turns=3 and the coder never finishes: the understand task parks
-    llm.push("thinking", "still thinking", "hmm", "not json", "nope", PlanDraft(tasks=[{"title": "Home page"}]))  # type: ignore[list-item]
+    llm.push("thinking", "still thinking", "hmm", MEMORY_LOG, "not json", "nope",
+             PlanDraft(tasks=[{"title": "Home page"}]))  # type: ignore[list-item]
     await actor.request_kickoff("alice")
     await until(lambda: any("Plan drafted" in s for s in kickoff_steps(log)))
     assert "Couldn't read the project; planning from the description" in kickoff_steps(log)
@@ -918,6 +945,60 @@ async def test_coder_builds_in_the_sandbox_on_the_rooms_files(tmp_path, monkeypa
     assert sandbox.calls[0]["files"]["/app/src/Booking.tsx"] == b"export const Booking = 1;\n"
     assert notices(log, "build.result")[0]["errors"] == ["src/Booking.tsx:1: bad type"]
     assert (await actor.get_budget_status())["sandbox_runs_used"] == 1
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_coder_loads_and_updates_room_memory(setup):
+    registry, llm, logs, runtimes = setup
+    RoomMemoryStore("room_test1").save_task_log(Log(LogDraft(app="A yoga booking app.")))
+    actor = await new_room(registry, llm, logs)
+    room_log = logs[actor.room_id]
+
+    llm.push(
+        tool_reply(("write_file", {"path": "notes/booking.md", "content": "Booking flow notes"})),
+        tool_reply(("finish_task", {"summary": "Added the booking notes"})),
+        json.dumps({"app": "A yoga booking app with booking notes.",
+                    "changed": ["Added booking notes", "Created notes/booking.md"],
+                    "open_threads": [], "conventions": []}),
+    )
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: (Path(".mux/memory/room_test1/current.md").exists() and
+                         "booking notes" in Path(".mux/memory/room_test1/current.md").read_text()))
+
+    coder_call = next(call for call in llm.calls if call.tools)
+    prompt = "\n".join(message["content"] for message in coder_call.messages)
+    assert "LATEST ROOM LOG" in prompt and "A yoga booking app." in prompt
+    memory_call = next(call for call in llm.calls if call.schema is not None)
+    assert "write_file: notes/booking.md" in memory_call.messages[-1]["content"]
+    assert "Created notes/booking.md" in Path(".mux/memory/room_test1/current.md").read_text()
+    assert runtimes[0].memory.current_log is not None
+    assert runtimes[0].memory.current_log.draft.app == "A yoga booking app with booking notes."
+    await registry.shutdown_all()
+
+
+@pytest.mark.asyncio
+async def test_ending_sitting_compacts_task_logs(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    llm.push(
+        tool_reply(("finish_task", {"summary": "Added the booking page"})),
+        json.dumps({"app": "Booking app after task.", "changed": ["Added booking page"],
+                    "open_threads": [], "conventions": []}),
+        json.dumps({"app": "Compacted sitting summary.", "changed": ["Booking page is available"],
+                    "open_threads": [], "conventions": []}),
+    )
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: runtimes[0].memory.current_log is not None)
+    await until(lambda: len(runtimes[0].memory.task_logs) == 1)
+
+    assert await actor.command_end_session("alice")
+    await runtimes[0].idle()
+    await until(lambda: runtimes[0].memory.day_log is not None)
+
+    assert runtimes[0].memory.day_log.draft.app == "Compacted sitting summary."
+    assert runtimes[0].memory.task_logs == []
+    assert "Compacted sitting summary." in Path(".mux/memory/room_test1/current.md").read_text()
     await registry.shutdown_all()
 
 

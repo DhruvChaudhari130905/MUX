@@ -192,7 +192,7 @@ export default function DashboardPage() {
     try {
       const room = await api.createRoom(newRoomDesc.trim(), newRoomRole, newRoomPassword || undefined);
       if (planWithMe) {
-        api.kickoff(room.id).catch(error => alert(error instanceof Error ? `Planning didn't start: ${error.message}` : "Planning didn't start"));
+        api.kickoff(room.id, newRoomDesc.trim()).catch(error => alert(error instanceof Error ? `Planning didn't start: ${error.message}` : "Planning didn't start"));
       }
       setRooms([room, ...rooms]);
       setNewRoomDesc('');

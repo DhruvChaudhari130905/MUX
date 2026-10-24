@@ -148,6 +148,7 @@ async def list_checkpoints(
             "plan_items": len(cp_data.get("plan", [])),
             "created_at": cp_data.get("created_at"),
             "created_by": cp_data.get("created_by"),
+            "parent_id": cp_data.get("parent_id"),
             "includes_files": cp_data.get("includes_files", True),
             "includes_plan": cp_data.get("includes_plan", True),
         })

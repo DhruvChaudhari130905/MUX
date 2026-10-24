@@ -386,17 +386,47 @@ def test_rewind_restores_files_and_keeps_sequences_unique(client):
     cp = client.post(f"/api/export/{rid}/checkpoints", json={"description": "cp"}, headers=auth("alice")).json()["checkpoint_id"]
     client.put(f"/api/files/{rid}/files/a.py", json={"path": "a.py", "content": "v2"}, headers=auth("alice"))
     client.post(f"/api/files/{rid}/files", json={"path": "b.py", "content": "new"}, headers=auth("alice"))
+    future = client.post(f"/api/export/{rid}/checkpoints", json={"description": "future"}, headers=auth("alice")).json()["checkpoint_id"]
 
     r = client.post(f"/rooms/{rid}/rewind", json={"checkpoint_id": cp}, headers=auth("alice"))
     assert r.status_code == 200, r.text
+    present = r.json()["present_checkpoint_id"]
     assert client.get(f"/api/files/{rid}/files/a.py", headers=auth("alice")).json()["content"] == "v1"
     assert client.get(f"/api/files/{rid}/files/b.py", headers=auth("alice")).status_code == 404
+
+    # Both the old future and the saved present remain available; new work branches from cp.
+    saved = client.get(f"/api/export/{rid}/checkpoints", headers=auth("alice")).json()["checkpoints"]
+    assert {item["checkpoint_id"] for item in saved} >= {cp, future, present}
+    client.post(f"/api/files/{rid}/files", json={"path": "c.py", "content": "new branch"}, headers=auth("alice"))
+    branch = client.post(f"/api/export/{rid}/checkpoints", json={"description": "new branch"}, headers=auth("alice")).json()["checkpoint_id"]
+    all_checkpoints = client.get(f"/api/export/{rid}/checkpoints", headers=auth("alice")).json()["checkpoints"]
+    assert client.get(f"/api/export/{rid}/checkpoints/{branch}", headers=auth("alice")).json()["parent_id"] == cp
+
+    restored = client.post(f"/rooms/{rid}/restore-checkpoint", json={"checkpoint_id": present}, headers=auth("alice"))
+    assert restored.status_code == 200, restored.text
+    assert client.get(f"/api/files/{rid}/files/a.py", headers=auth("alice")).json()["content"] == "v2"
+    assert client.get(f"/api/files/{rid}/files/b.py", headers=auth("alice")).json()["content"] == "new"
+    assert client.get(f"/api/files/{rid}/files/c.py", headers=auth("alice")).status_code == 404
 
     room = registry_call(client, room_registry.get_registry().get_room, rid)
     seqs = [e.sequence for e in room.event_log._events]
     assert seqs == list(range(1, len(seqs) + 1))
-    # Checkpoints survive the rewind (the original plus the pre-rewind one)
-    assert len(client.get(f"/api/export/{rid}/checkpoints", headers=auth("alice")).json()["checkpoints"]) == 2
+    assert len(all_checkpoints) == 4
+    rewind_event = next(e for e in room.event_log._events if e.type.value == "command_rewind")
+    restore_event = next(e for e in room.event_log._events if e.type.value == "checkpoint_restored")
+    assert rewind_event.target_checkpoint_id == cp and rewind_event.return_checkpoint_id == present
+    assert set(rewind_event.files) == {"a.py"} and rewind_event.plan == []
+    assert restore_event.checkpoint_id == present and set(restore_event.files) == {"a.py", "b.py"}
+
+    # Replaying the event log after a restart restores the saved present and every branch.
+    registry = room_registry.get_registry()
+    registry_call(client, registry.stop_room, rid)
+    rehydrated = registry_call(client, registry.get_room_or_rehydrate, rid)
+    assert rehydrated is not None
+    assert registry_call(client, rehydrated.get_file, "a.py") == "v2"
+    assert registry_call(client, rehydrated.get_file, "b.py") == "new"
+    assert rehydrated.manifest.active_checkpoint_id == present
+    assert len(rehydrated.manifest.list_checkpoints()) == 4
 
 
 def test_rehydration_restores_state(client):

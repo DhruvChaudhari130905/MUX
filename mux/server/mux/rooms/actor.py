@@ -540,10 +540,10 @@ class RoomActor:
             self.skills_enabled = set(names)
             await self._emit(RoomSkillsSetEvent(**self._event_fields(user_id), enabled=names))
 
-    async def request_kickoff(self, user_id: str) -> None:
+    async def request_kickoff(self, user_id: str, brief: Optional[str] = None) -> None:
         """Ask the room's runtime to plan the room with the team (rooms/runtime.py _kickoff)."""
         async with self._lock:
-            await self._emit(KickoffRequestedEvent(**self._event_fields(user_id), requested_by=user_id))
+            await self._emit(KickoffRequestedEvent(**self._event_fields(user_id), requested_by=user_id, brief=brief))
 
     async def close_room(self, user_id: str, reason: Optional[str] = None) -> None:
         async with self._lock:
@@ -677,6 +677,34 @@ class RoomActor:
             )
             await self._emit(event)
         return new_items
+
+    async def reorder_plan(self, item_ids: list[str], user_id: str) -> list[dict]:
+        """Reorder draft and upcoming tasks in their existing slots, preserving all other task state."""
+        async with self._lock:
+            current = await self.plan.get_items()
+            movable = [item for item in current if item.get("status") in ("draft", "todo")]
+            movable_ids = [item["id"] for item in movable]
+            if len(item_ids) != len(set(item_ids)) or set(item_ids) != set(movable_ids):
+                raise ValueError("The task list changed. Refresh the plan and try again")
+            by_id = {item["id"]: item for item in movable}
+            ordered = iter(by_id[item_id] for item_id in item_ids)
+            new_items = [next(ordered) if item.get("status") in ("draft", "todo") else item for item in current]
+            if new_items == current:
+                return current
+            new_items = await self.plan.replace(new_items)
+            event = PlanUpdatedEvent(
+                id=uuid4(),
+                type=EventType.PLAN_UPDATED,
+                room_id=self.room_id,
+                user_id=user_id,
+                timestamp=datetime.now(timezone.utc),
+                sequence=self._next_sequence(),
+                prev_event_id=None,
+                plan=new_items,
+                updated_by=user_id,
+            )
+            await self._emit(event)
+            return new_items
 
     async def add_plan_item(self, item: dict, user_id: str) -> dict:
         async with self._lock:
@@ -1258,6 +1286,7 @@ class RoomActor:
             checkpoint_data = await self._snapshot(
                 checkpoint_id, description, user_id, include_files, include_plan,
                 sequence=self._state.sequence, created_at=time.time(),
+                parent_id=self.manifest.active_checkpoint_id,
             )
             self.manifest.add_checkpoint(checkpoint_id, checkpoint_data)
 
@@ -1268,6 +1297,7 @@ class RoomActor:
                 created_by=user_id,
                 includes_files=include_files,
                 includes_plan=include_plan,
+                parent_id=checkpoint_data["parent_id"],
             )
             await self._emit(event)
         return checkpoint_id
@@ -1282,6 +1312,7 @@ class RoomActor:
         *,
         sequence: int,
         created_at: float,
+        parent_id: Optional[str] = None,
     ) -> dict:
         """Capture plan/files as checkpoint data (caller holds the lock)."""
         return {
@@ -1294,6 +1325,7 @@ class RoomActor:
             "includes_plan": include_plan,
             "created_at": created_at,
             "created_by": user_id,
+            "parent_id": parent_id,
         }
 
     async def _restore_snapshot(self, checkpoint_data: dict) -> None:
@@ -1316,29 +1348,47 @@ class RoomActor:
                 return False
 
             await self._restore_snapshot(checkpoint_data)
+            self.manifest.set_active_checkpoint(checkpoint_id)
 
             event = CheckpointRestoredEvent(
                 **self._event_fields(user_id),
                 checkpoint_id=checkpoint_id,
                 restored_by=user_id,
                 restore_point=checkpoint_data.get("sequence", 0),
+                plan=await self.plan.get_items(),
+                files={entry.path: {"hash": entry.hash, "version": entry.version}
+                       for entry in self.manifest.list_entries()},
             )
             await self._emit(event)
         return True
 
-    async def rewind_to_sequence(self, target_sequence: int, user_id: str, reason: Optional[str] = None, preserve_checkpoint: bool = False) -> bool:
+    async def rewind_to_sequence(self, target_sequence: int, user_id: str, reason: Optional[str] = None,
+                                 preserve_checkpoint: bool = False,
+                                 target_checkpoint_id: Optional[str] = None) -> Optional[str]:
         """Rewind the plan and files to their state as of a specific event sequence.
 
         Presence, membership, budget usage, sitting state and checkpoints are kept:
         rewinding the document must not refund spent budget or drop connected users.
         """
+        initial_events = await self.event_log.get_all(self.room_id)
+        if not initial_events or target_sequence < 0 or target_sequence > initial_events[-1].sequence:
+            return None
+        return_checkpoint_id = None
         if preserve_checkpoint:
-            await self.create_checkpoint(user_id, f"Pre-rewind checkpoint at sequence {self._state.sequence}")
+            return_checkpoint_id = await self.create_checkpoint(
+                user_id, f"Saved present before rewind at sequence {self._state.sequence}")
 
         async with self._lock:
             events = await self.event_log.get_all(self.room_id)
             if not events or target_sequence < 0 or target_sequence > events[-1].sequence:
-                return False
+                return None
+
+            if target_checkpoint_id not in self.manifest.list_checkpoints():
+                target_checkpoint_id = max(
+                    ((cid, data) for cid, data in self.manifest.list_checkpoints().items()
+                     if data.get("sequence", -1) <= target_sequence),
+                    key=lambda pair: pair[1].get("sequence", -1), default=(None, {}),
+                )[0]
 
             await self._reset_document_state()
             await self._replay_unlocked(
@@ -1346,6 +1396,7 @@ class RoomActor:
                 include_session_state=False,
                 record_checkpoints=False,
             )
+            self.manifest.set_active_checkpoint(target_checkpoint_id)
 
             event = CommandRewindEvent(
                 **self._event_fields(user_id),
@@ -1353,9 +1404,14 @@ class RoomActor:
                 issued_by=user_id,
                 reason=reason,
                 preserve_checkpoint=preserve_checkpoint,
+                target_checkpoint_id=target_checkpoint_id,
+                return_checkpoint_id=return_checkpoint_id,
+                plan=await self.plan.get_items(),
+                files={entry.path: {"hash": entry.hash, "version": entry.version}
+                       for entry in self.manifest.list_entries()},
             )
             await self._emit(event)
-        return True
+        return return_checkpoint_id or "rewound"
 
     async def subscribe_since(self, since: int, subscribe: Callable[[list[BaseEvent]], Awaitable[None]]) -> None:
         """Read the events after `since` and run `subscribe(events)` while no new event can be emitted.
@@ -1400,11 +1456,20 @@ class RoomActor:
         applied: list[BaseEvent] = []
         for event in events:
             if event.type == EventType.COMMAND_REWIND:
-                target = cast(CommandRewindEvent, event).target_sequence
+                rewind = cast(CommandRewindEvent, event)
+                target = rewind.target_sequence
                 applied = [e for e in applied if e.sequence <= target]
                 await self._reset_document_state()
                 for earlier in applied:
                     await self._apply_event(earlier, include_session_state=False)
+                target_checkpoint_id = rewind.target_checkpoint_id
+                if target_checkpoint_id not in self.manifest.list_checkpoints():
+                    target_checkpoint_id = max(
+                        ((cid, data) for cid, data in self.manifest.list_checkpoints().items()
+                         if data.get("sequence", -1) <= target),
+                        key=lambda pair: pair[1].get("sequence", -1), default=(None, {}),
+                    )[0]
+                self.manifest.set_active_checkpoint(target_checkpoint_id)
                 continue
 
             if event.type == EventType.CHECKPOINT_CREATED and record_checkpoints:
@@ -1416,6 +1481,9 @@ class RoomActor:
                         cp.includes_files, cp.includes_plan,
                         sequence=applied[-1].sequence if applied else 0,
                         created_at=cp.timestamp.timestamp(),
+                        # Older persisted events predate parent_id; infer their original linear parent
+                        # from the active head while replaying so existing rooms gain branch history.
+                        parent_id=cp.parent_id or self.manifest.active_checkpoint_id,
                     )
                     self.manifest.add_checkpoint(cp.checkpoint_id, data)
 
@@ -1561,6 +1629,7 @@ class RoomActor:
                 data = self.manifest.get_checkpoint(e.checkpoint_id)
                 if data:
                     await self._restore_snapshot(data)
+                    self.manifest.set_active_checkpoint(e.checkpoint_id)
                 else:
                     logger.warning(f"Room {self.room_id}: checkpoint {e.checkpoint_id} missing during replay")
 

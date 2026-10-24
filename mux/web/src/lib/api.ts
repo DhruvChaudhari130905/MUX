@@ -1,7 +1,7 @@
 // API client for REST commands
 import type { ChangeRequest, PlanName, UserPlan, AiRole, Invite, InviteResult, McpToolSetting, RoomAi, RoomMcp, RoomSkill, Room, Message, MessageTo, PlanItem, Conflict, Question, Budget, Checkpoint, User, Membership } from '@/types';
 
-import { createDemoRoom, deleteDemoRoom, demoMessageEvent, demoPlan, getDemoRoom, isDemoMode, listDemoRooms, nextDemoSeq, setDemoPlan } from './demo';
+import { createDemoRoom, deleteDemoRoom, demoMessageEvent, demoPlan, getDemoRoom, isDemoMode, listDemoRooms, nextDemoSeq, rememberDemoEvent, setDemoPlan } from './demo';
 import { getSocket } from './socket';
 import { getAccessToken } from './supabase';
 
@@ -32,6 +32,24 @@ async function demoFetch<T>(path: string, options: RequestInit): Promise<T> {
   if (roomMatch && roomMatch[2] === '/password') return Object.assign(getDemoRoom(roomMatch[1]), { has_password: Boolean(body.password) }) as T;
   if (roomMatch && roomMatch[2] === '/messages') {
     getSocket(roomMatch[1]).injectEvent(demoMessageEvent(roomMatch[1], body.text, body.to));
+  }
+  if (roomMatch && roomMatch[2] === '/plan/reorder') {
+    const socket = getSocket(roomMatch[1]);
+    const current = socket.getState()?.plan ?? [];
+    const movable = current.filter(item => item.status === 'draft' || item.status === 'todo');
+    const ids = Array.isArray(body.item_ids) ? body.item_ids as string[] : [];
+    if (ids.length !== movable.length || new Set(ids).size !== ids.length || ids.some(id => !movable.some(item => item.id === id))) {
+      throw new ApiError('The task list changed. Refresh the plan and try again', 409);
+    }
+    const byId = new Map<string, typeof movable[number]>(movable.map(item => [item.id, item]));
+    let index = 0;
+    const items = current.map(item => item.status === 'draft' || item.status === 'todo' ? byId.get(ids[index++])! : item);
+    const event = {
+      seq: nextDemoSeq(), room_id: roomMatch[1], type: 'plan.edited', actor_id: 'demo-you', ts: new Date().toISOString(),
+      payload: { items },
+    } as import('@/types').AppEvent;
+    rememberDemoEvent(event);
+    socket.injectEvent(event);
   }
   if (roomMatch && roomMatch[2]?.startsWith('/skills')) return [] as T;
   if (roomMatch && roomMatch[2] === '/ai/models') return { models: [] } as T;
@@ -181,6 +199,11 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ items }),
     }),
+  reorderPlan: (roomId: string, itemIds: string[]) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/reorder`, {
+      method: 'POST',
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
   approvePlan: (roomId: string) =>
     fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/approve`, { method: 'POST' }),
   // "Run plan": the coder retries every task it stopped on. 409 without an AI model
@@ -193,8 +216,11 @@ export const api = {
       body: JSON.stringify({ errors, source: 'preview' }),
     }),
   // Owner only: "Plan it with me" (read the project, ask the team, draft a plan). 409 without an AI model
-  kickoff: (roomId: string) =>
-    fetchWithAuth<{ accepted: true }>(`/rooms/${roomId}/kickoff`, { method: 'POST' }),
+  kickoff: (roomId: string, brief: string) =>
+    fetchWithAuth<{ accepted: true }>(`/rooms/${roomId}/kickoff`, {
+      method: 'POST',
+      body: JSON.stringify({ brief }),
+    }),
 
   // Conflicts
   voteConflict: (roomId: string, conflictId: string, option: string) =>
@@ -260,7 +286,12 @@ export const api = {
 
   // Rewind
   rewind: (roomId: string, checkpointId: string) =>
-    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/rewind`, {
+    fetchWithAuth<{ accepted: true; seq: number; present_checkpoint_id: string }>(`/rooms/${roomId}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ checkpoint_id: checkpointId }),
+    }),
+  restoreCheckpoint: (roomId: string, checkpointId: string) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/restore-checkpoint`, {
       method: 'POST',
       body: JSON.stringify({ checkpoint_id: checkpointId }),
     }),

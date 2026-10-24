@@ -238,6 +238,7 @@ export interface Checkpoint {
   task_log_id: string;
   parent_id: string | null;
   created_at: string;
+  description?: string | null;
 }
 
 export interface Budget {
@@ -278,6 +279,8 @@ export interface RoomState {
   questions: Question[];
   files: Map<string, { hash: string; version: number }>;
   checkpoints: Checkpoint[];
+  active_checkpoint_id: string | null;
+  return_checkpoint_id: string | null;
   budget: Budget;
   presence: Presence[];
   current_user: User;
@@ -446,7 +449,13 @@ export interface CheckpointCreatedEvent extends BaseEvent {
 
 export interface RoomRewoundEvent extends BaseEvent {
   type: 'room.rewound';
-  payload: { checkpoint_id: string; seq: number };
+  payload: {
+    checkpoint_id: string | null;
+    seq: number;
+    return_checkpoint_id?: string | null;
+    plan?: PlanItem[];
+    files?: Record<string, { hash: string; version: number }>;
+  };
 }
 
 export interface BudgetUpdatedEvent extends BaseEvent {

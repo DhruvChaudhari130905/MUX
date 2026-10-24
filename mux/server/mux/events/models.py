@@ -313,6 +313,7 @@ class KickoffRequestedEvent(BaseEvent):
     """The owner asked MUX to plan the room with the team ("Plan it with me")."""
     type: EventType = EventType.KICKOFF_REQUESTED
     requested_by: str = Field(..., description="User who asked")
+    brief: Optional[str] = Field(default=None, max_length=2000, description="What the owner wants the project to do")
 
 
 class RoomSkillsSetEvent(BaseEvent):
@@ -501,6 +502,10 @@ class CommandRewindEvent(BaseEvent):
     issued_by: str = Field(..., description="User who issued the command")
     reason: Optional[str] = Field(default=None, description="Reason for rewinding")
     preserve_checkpoint: bool = Field(False, description="Whether to create checkpoint before rewind")
+    target_checkpoint_id: Optional[str] = Field(default=None, description="Checkpoint selected on the timeline")
+    return_checkpoint_id: Optional[str] = Field(default=None, description="Saved live state from before this rewind")
+    plan: List[Dict[str, Any]] = Field(default_factory=list, description="Restored plan for live clients")
+    files: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Restored file index for live clients")
 
 
 class CommandEndSessionEvent(BaseEvent):
@@ -604,6 +609,7 @@ class CheckpointCreatedEvent(BaseEvent):
     created_by: str = Field(..., description="User or system that created the checkpoint")
     includes_files: bool = Field(True, description="Whether file states are included")
     includes_plan: bool = Field(True, description="Whether plan state is included")
+    parent_id: Optional[str] = Field(default=None, description="Checkpoint this checkpoint branches from")
 
 
 class CheckpointRestoredEvent(BaseEvent):
@@ -612,6 +618,8 @@ class CheckpointRestoredEvent(BaseEvent):
     checkpoint_id: str = Field(..., description="ID of the checkpoint that was restored")
     restored_by: str = Field(..., description="User or system that initiated the restore")
     restore_point: int = Field(..., description="Event sequence number restored to")
+    plan: List[Dict[str, Any]] = Field(default_factory=list, description="Restored plan for live clients")
+    files: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Restored file index for live clients")
 
 
 # Conflict events

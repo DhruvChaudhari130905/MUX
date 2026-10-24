@@ -70,6 +70,14 @@ class RoomCreateRequest(BaseModel):
         return (self.description or "").strip().splitlines()[0][:200]
 
 
+class PlanReorderRequest(BaseModel):
+    item_ids: list[str] = Field(..., description="Reordered ids of all draft and upcoming tasks")
+
+
+class KickoffRequest(BaseModel):
+    brief: str = Field(..., min_length=1, max_length=2000, description="What to build or improve")
+
+
 class RoomJoinRequest(BaseModel):
     """Request to join a room."""
     user_name: Optional[str] = Field(None, max_length=100, description="Display name")
@@ -241,6 +249,10 @@ class RewindRequest(BaseModel):
     checkpoint_id: str
 
 
+class RestoreCheckpointRequest(BaseModel):
+    checkpoint_id: str
+
+
 class BudgetUpdateRequest(BaseModel):
     """`PATCH /rooms/{id}/budget`."""
     tokens_cap: Optional[int] = Field(None, ge=1)
@@ -257,6 +269,10 @@ class Accepted(BaseModel):
     """Every command's answer; the effect arrives on the socket."""
     accepted: Literal[True] = True
     seq: int
+
+
+class RewindAccepted(Accepted):
+    present_checkpoint_id: str
 
 
 class FileSaved(Accepted):
@@ -294,8 +310,7 @@ async def room_view(actor: RoomActor) -> dict[str, Any]:
     """The web app's `Room` shape."""
     meta = actor.manifest.get_room_metadata()
     budget = await actor.budget.get_status()
-    checkpoints = actor.manifest.list_checkpoints()
-    head = max(checkpoints.items(), key=lambda kv: kv[1].get("created_at", 0))[0] if checkpoints else None
+    head = actor.manifest.active_checkpoint_id
     members = [membership_view(actor.room_id, actor.owner_id, "owner", actor.domain_roles.get(actor.owner_id),
                                actor.member_names.get(actor.owner_id))]
     members += [
@@ -484,6 +499,7 @@ async def _check_password(actor: RoomActor, user_id: str, password: str) -> None
 @router.post("/{room_id}/kickoff")
 async def kickoff(
     room_id: str,
+    request: KickoffRequest | None = None,
     current_user: User = Depends(require_owner),
     actor: RoomActor = Depends(get_room_actor),
 ) -> dict[str, Any]:
@@ -493,7 +509,7 @@ async def kickoff(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room has no AI model, so planning can't start")
     if runtime.kickoff_running:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Planning is already running")
-    await actor.request_kickoff(current_user.id)
+    await actor.request_kickoff(current_user.id, request.brief.strip() if request else None)
     return {"accepted": True}
 
 
@@ -748,6 +764,21 @@ async def update_plan(
     return accepted(actor)
 
 
+@router.post("/{room_id}/plan/reorder", response_model=Accepted)
+async def reorder_plan(
+    room_id: str,
+    request: PlanReorderRequest,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Reorder draft and not-yet-started tasks; the room event syncs the saved order to everyone."""
+    try:
+        await actor.reorder_plan(request.item_ids, current_user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return accepted(actor)
+
+
 @router.post("/{room_id}/plan/approve", response_model=Accepted)
 async def approve_plan(
     room_id: str,
@@ -959,7 +990,7 @@ async def decide_change_request(
 # Rewind, budget, session, export
 # =============================================================================
 
-@router.post("/{room_id}/rewind", response_model=Accepted)
+@router.post("/{room_id}/rewind", response_model=RewindAccepted)
 async def rewind(
     room_id: str,
     request: RewindRequest,
@@ -974,14 +1005,32 @@ async def rewind(
     if not checkpoint_data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Checkpoint not found: {request.checkpoint_id}")
     target_sequence = checkpoint_data.get("sequence", 0)
-    ok = await actor.rewind_to_sequence(
+    present_checkpoint_id = await actor.rewind_to_sequence(
         target_sequence=target_sequence,
         user_id=current_user.id,
         reason=f"Rewind to checkpoint {request.checkpoint_id}",
         preserve_checkpoint=True,
+        target_checkpoint_id=request.checkpoint_id,
     )
-    if not ok:
+    if not present_checkpoint_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rewind failed: invalid target sequence")
+    return RewindAccepted(seq=actor.sequence, present_checkpoint_id=present_checkpoint_id)
+
+
+@router.post("/{room_id}/restore-checkpoint", response_model=Accepted)
+async def restore_checkpoint(
+    room_id: str,
+    request: RestoreCheckpointRequest,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Restore an existing saved point on the timeline, keeping all branches available."""
+    if actor.access.is_restricted(current_user.id, actor.owner_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="Restoring changes every folder; ask the room owner to do it")
+    if not await actor.restore_checkpoint(request.checkpoint_id, current_user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Checkpoint not found: {request.checkpoint_id}")
     return accepted(actor)
 
 
