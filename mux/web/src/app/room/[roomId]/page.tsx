@@ -26,7 +26,7 @@ import { notify } from '@/lib/notifications';
 import { needsApproval } from '@/lib/fileAccess';
 import { reduce } from '@/lib/reducer';
 import { supabase, getUser, loginHref } from '@/lib/supabase';
-import type { RoomState, Room, User, Message, MessageTo, PlanItem, Conflict, Question, Checkpoint, Membership } from '@/types';
+import type { RoomState, Room, User, Message, MessageTo, Conflict, Question, Checkpoint, Membership } from '@/types';
 import { format } from 'date-fns';
 
 export default function RoomPage() {
@@ -523,13 +523,35 @@ export default function RoomPage() {
     }
   }, [roomId]);
 
-  const handlePlanUpdate = useCallback(async (items: PlanItem[]) => {
+  // Plan ops hit one task at a time through the server's own plan: an add/rename/remove/reorder
+  // can't overwrite a task another member added or the coder created a moment ago
+  const handlePlanAdd = useCallback(async (title: string) => {
     if (!roomId) return;
     try {
-      await api.updatePlan(roomId, items);
+      await api.addPlanItem(roomId, title);
     } catch (error) {
-      console.error('Failed to update plan:', error);
-      alert(`Could not save the plan: ${error instanceof Error ? error.message : 'please try again'}`);
+      console.error('Failed to add task:', error);
+      alert(`Could not add the task: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId]);
+
+  const handlePlanRename = useCallback(async (id: string, title: string) => {
+    if (!roomId) return;
+    try {
+      await api.updatePlanItem(roomId, id, title);
+    } catch (error) {
+      console.error('Failed to rename task:', error);
+      alert(`Could not rename the task: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId]);
+
+  const handlePlanRemove = useCallback(async (id: string) => {
+    if (!roomId) return;
+    try {
+      await api.removePlanItem(roomId, id);
+    } catch (error) {
+      console.error('Failed to remove task:', error);
+      alert(`Could not remove the task: ${error instanceof Error ? error.message : 'please try again'}`);
     }
   }, [roomId]);
 
@@ -719,7 +741,9 @@ export default function RoomPage() {
             onVote={handleVote}
             onOverride={handleOverride}
             onAnswer={handleAnswer}
-            onPlanUpdate={handlePlanUpdate}
+            onPlanAdd={handlePlanAdd}
+            onPlanRename={handlePlanRename}
+            onPlanRemove={handlePlanRemove}
             onPlanReorder={handlePlanReorder}
             onPlanApprove={handlePlanApprove}
             onPlanRun={handlePlanRun}

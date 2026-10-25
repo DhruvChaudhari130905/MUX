@@ -217,6 +217,18 @@ class PlanUpdateRequest(BaseModel):
     items: list[dict] = Field(..., description="Plan items")
 
 
+class PlanItemCreateRequest(BaseModel):
+    """`POST /rooms/{id}/plan/items`: one new task; the server composes the item, so adds from
+    different editors can't overwrite each other."""
+    title: str = Field(..., min_length=1, max_length=200)
+    notes: Optional[str] = Field(None, max_length=2000)
+
+
+class PlanItemUpdateRequest(BaseModel):
+    """`PATCH /rooms/{id}/plan/items/{item_id}`: rename or re-note a single task."""
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+
+
 class ErrorReport(BaseModel):
     """`POST /rooms/{id}/errors`: errors seen while the app runs, for the coder to fix."""
     errors: list[Annotated[str, StringConstraints(min_length=1, max_length=2000)]] = Field(..., min_length=1, max_length=20)
@@ -754,6 +766,56 @@ async def update_plan(
 ) -> Accepted:
     """Replace the draft plan with the edited one (emits plan.edited with the items)."""
     await actor.replace_plan(request.items, current_user.id)
+    return accepted(actor)
+
+
+@router.post("/{room_id}/plan/items", response_model=Accepted)
+async def add_plan_item(
+    room_id: str,
+    request: PlanItemCreateRequest,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Add one task. The server composes the item from the plan it owns, so two editors adding
+    at the same time both land (whole-plan sends would keep only the last one)."""
+    item: dict = {"id": uuid.uuid4().hex[:12], "title": request.title, "status": "draft"}
+    if request.notes is not None:
+        item["notes"] = request.notes
+    await actor.add_plan_item(item, current_user.id)
+    return accepted(actor)
+
+
+@router.patch("/{room_id}/plan/items/{item_id}", response_model=Accepted)
+async def update_plan_item(
+    room_id: str,
+    item_id: str,
+    request: PlanItemUpdateRequest,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Rename (or re-note) a single task without sending the whole plan."""
+    changes = {"title": request.title} if request.title is not None else {}
+    if not changes:
+        return accepted(actor)
+    try:
+        await actor.update_plan_item(item_id, changes, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    return accepted(actor)
+
+
+@router.delete("/{room_id}/plan/items/{item_id}", response_model=Accepted)
+async def delete_plan_item(
+    room_id: str,
+    item_id: str,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> Accepted:
+    """Remove a single task without sending the whole plan."""
+    try:
+        await actor.remove_plan_item(item_id, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     return accepted(actor)
 
 

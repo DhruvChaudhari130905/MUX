@@ -1,7 +1,7 @@
 // API client for REST commands
 import type { ChangeRequest, PlanName, UserPlan, AiRole, Invite, InviteResult, McpToolSetting, RoomAi, RoomMcp, RoomSkill, Room, Message, MessageTo, PlanItem, Conflict, Question, Budget, Checkpoint, User, Membership } from '@/types';
 
-import { createDemoRoom, deleteDemoRoom, demoMessageEvent, demoPlan, getDemoRoom, isDemoMode, listDemoRooms, nextDemoSeq, rememberDemoEvent, setDemoPlan } from './demo';
+import { createDemoRoom, deleteDemoRoom, demoMessageEvent, demoPlan, demoPlanApprovedEvent, demoPlanEditedEvent, demoPlanItemAddedEvent, demoPlanItemRemovedEvent, demoPlanItemUpdatedEvent, getDemoRoom, isDemoMode, listDemoRooms, nextDemoSeq, rememberDemoEvent, setDemoPlan } from './demo';
 import { getSocket } from './socket';
 import { getAccessToken } from './supabase';
 
@@ -56,7 +56,32 @@ async function demoFetch<T>(path: string, options: RequestInit): Promise<T> {
   if (roomMatch && roomMatch[2] === '/ai') return { source: 'server', provider: null, base_url: null, models: null, has_key: false } as T;
   if (roomMatch && roomMatch[2]?.startsWith('/mcp')) return { admin: [], servers: [] } as T;
   if (roomMatch && roomMatch[2] === '/kickoff') return { accepted: true } as T;
-  if (roomMatch && roomMatch[2] === '/plan/run') return { accepted: true, retried: 0 } as T;
+  if (roomMatch && roomMatch[2] === '/plan' && method === 'PATCH') {
+    // Bulk edit (legacy path): replay the sent items the way the server would
+    getSocket(roomMatch[1]).injectEvent(demoPlanEditedEvent(roomMatch[1], body.items));
+    return { accepted: true, seq: nextDemoSeq() } as T;
+  }
+  if (roomMatch && roomMatch[2] === '/plan/items' && method === 'POST') {
+    // The server composes the item; demo does the same from the live state. New work stays a
+    // draft until the owner approves it.
+    const sock = getSocket(roomMatch[1]);
+    const item: PlanItem = { id: `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`, title: body.title, status: 'draft' };
+    sock.injectEvent(demoPlanItemAddedEvent(roomMatch[1], item));
+    return { accepted: true, seq: nextDemoSeq() } as T;
+  }
+  const itemMatch = roomMatch && roomMatch[2] ? roomMatch[2].match(/^\/plan\/items\/([^/]+)$/) : null;
+  if (roomMatch && itemMatch && method === 'PATCH') {
+    getSocket(roomMatch[1]).injectEvent(demoPlanItemUpdatedEvent(roomMatch[1], itemMatch[1], { title: body.title }));
+    return { accepted: true, seq: nextDemoSeq() } as T;
+  }
+  if (roomMatch && itemMatch && method === 'DELETE') {
+    getSocket(roomMatch[1]).injectEvent(demoPlanItemRemovedEvent(roomMatch[1], itemMatch[1]));
+    return { accepted: true, seq: nextDemoSeq() } as T;
+  }
+  if (roomMatch && roomMatch[2] === '/plan/approve') {
+    getSocket(roomMatch[1]).injectEvent(demoPlanApprovedEvent(roomMatch[1]));
+    return { accepted: true, seq: nextDemoSeq() } as T;
+  }
   if (roomMatch && roomMatch[2] === '/errors') return { accepted: true, task_id: null } as T;
   if (path === '/github/connect' || path.endsWith('/export')) return { url: 'https://github.com' } as T;
   return { accepted: true, seq: nextDemoSeq(), version: (body.base_version ?? 0) + 1 } as T;
@@ -193,11 +218,21 @@ export const api = {
     return res.blob();
   },
 
-  // Plan
-  updatePlan: (roomId: string, items: PlanItem[]) =>
-    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan`, {
+  // Plan (targeted ops: each call touches one thing through the server's own plan, so
+  // concurrent editors adding / renaming / removing tasks can't overwrite each other)
+  addPlanItem: (roomId: string, title: string) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/items`, {
+      method: 'POST',
+      body: JSON.stringify({ title }),
+    }),
+  updatePlanItem: (roomId: string, itemId: string, title: string) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/items/${itemId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ items }),
+      body: JSON.stringify({ title }),
+    }),
+  removePlanItem: (roomId: string, itemId: string) =>
+    fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/items/${itemId}`, {
+      method: 'DELETE',
     }),
   reorderPlan: (roomId: string, itemIds: string[]) =>
     fetchWithAuth<{ accepted: true; seq: number }>(`/rooms/${roomId}/plan/reorder`, {

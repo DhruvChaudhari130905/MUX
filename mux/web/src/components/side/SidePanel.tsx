@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import type { RoomState, Conflict, Question, PlanItem } from '@/types';
+import type { RoomState, Conflict, Question } from '@/types';
 import { ConflictCard } from './ConflictCard';
 import { QuestionCard } from './QuestionCard';
 import { ChangeRequestCard } from './ChangeRequestCard';
@@ -37,7 +37,10 @@ interface SidePanelProps {
   onVote: (conflictId: string, option: string) => void;
   onOverride: (conflictId: string, option: string) => void;
   onAnswer: (questionId: string, answer: string) => void;
-  onPlanUpdate: (items: PlanItem[]) => void;
+  // Targeted plan ops: one call per action, so concurrent editors can't overwrite each other
+  onPlanAdd: (title: string) => void;
+  onPlanRename: (id: string, title: string) => void;
+  onPlanRemove: (id: string) => void;
   onPlanReorder: (itemIds: string[]) => Promise<void> | void;
   onPlanApprove: () => void;
   onPlanRun: () => void;
@@ -57,7 +60,9 @@ export function SidePanel({
   onVote,
   onOverride,
   onAnswer,
-  onPlanUpdate,
+  onPlanAdd,
+  onPlanRename,
+  onPlanRemove,
   onPlanReorder,
   onPlanApprove,
   onPlanRun,
@@ -121,7 +126,9 @@ export function SidePanel({
             plan={state.plan}
             canEdit={currentUserRole !== 'viewer'}
             canApprove={currentUserRole === 'owner'}
-            onUpdate={onPlanUpdate}
+            onAdd={onPlanAdd}
+            onRename={onPlanRename}
+            onRemove={onPlanRemove}
             onReorder={onPlanReorder}
             onApprove={onPlanApprove}
             onRun={onPlanRun}

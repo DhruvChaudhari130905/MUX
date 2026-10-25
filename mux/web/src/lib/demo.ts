@@ -513,6 +513,43 @@ function baseDemoRoomEvents(roomId: string): AppEvent[] {
   ];
 }
 
+// Plan edits in demo mode: build the same events the real server would broadcast over the
+// room socket, so the reducer applies them exactly as it would live. Remembered like messages
+// (rememberSent) so plan edits and approvals survive a page reload.
+export function demoPlanEditedEvent(roomId: string, items: PlanItem[]): AppEvent {
+  return rememberPlanEvent('plan.edited', roomId, { items });
+}
+
+export function demoPlanApprovedEvent(roomId: string): AppEvent {
+  return rememberPlanEvent('plan.approved', roomId, {});
+}
+
+export function demoPlanItemAddedEvent(roomId: string, item: PlanItem): AppEvent {
+  return rememberPlanEvent('plan.item_added', roomId, item);
+}
+
+export function demoPlanItemUpdatedEvent(roomId: string, id: string, changes: Record<string, unknown>): AppEvent {
+  return rememberPlanEvent('plan.item_updated', roomId, { id, changes });
+}
+
+export function demoPlanItemRemovedEvent(roomId: string, id: string): AppEvent {
+  return rememberPlanEvent('plan.item_removed', roomId, { item_id: id });
+}
+
+function rememberPlanEvent(type: AppEvent['type'], roomId: string, payload: unknown): AppEvent {
+  const now = new Date().toISOString();
+  const event = {
+    seq: nextDemoSeq(),
+    room_id: roomId,
+    type,
+    actor_id: DEMO_USER.id,
+    ts: now,
+    payload,
+  } as AppEvent;
+  rememberSent(event);
+  return event;
+}
+
 export function demoMessageEvent(roomId: string, text: string, to: MessageTo = 'agent'): AppEvent {
   const now = new Date().toISOString();
   const event: AppEvent = {

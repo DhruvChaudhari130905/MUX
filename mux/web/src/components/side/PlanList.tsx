@@ -9,7 +9,11 @@ interface PlanListProps {
   // Owner and editors can rename, remove and add tasks; only the owner approves the draft
   canEdit: boolean;
   canApprove: boolean;
-  onUpdate: (items: PlanItem[]) => void;
+  // Targeted ops: one per action, so two editors editing at once can't overwrite each other
+  onAdd: (title: string) => void;
+  onRename: (id: string, title: string) => void;
+  onRemove: (id: string) => void;
+  // Drag & drop: the full order of movable (draft + todo) ids; the server composes the items
   onReorder: (itemIds: string[]) => Promise<void> | void;
   onApprove: () => void;
   // "Run plan": the coder retries the tasks it stopped on
@@ -38,8 +42,7 @@ const statusLabels: Record<string, string> = {
 const isChangeable = (item: PlanItem) => item.status !== 'done' && item.status !== 'doing';
 const isReorderable = (item: PlanItem) => item.status === 'draft' || item.status === 'todo';
 
-// Each edit sends the whole plan, built from the latest plan the room has seen
-export function PlanList({ plan, canEdit, canApprove, onUpdate, onReorder, onApprove, onRun, initialBrief, onKickoff }: PlanListProps) {
+export function PlanList({ plan, canEdit, canApprove, onAdd, onRename, onRemove, onReorder, onApprove, onRun, initialBrief, onKickoff }: PlanListProps) {
   const [newTitle, setNewTitle] = useState('');
   const [running, setRunning] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
@@ -56,10 +59,10 @@ export function PlanList({ plan, canEdit, canApprove, onUpdate, onReorder, onApp
     const clean = title.trim();
     const item = plan.find(p => p.id === id);
     if (!item || !clean || clean === item.title) return;
-    onUpdate(plan.map(p => (p.id === id ? { ...p, title: clean } : p)));
+    onRename(id, clean);
   };
 
-  const remove = (id: string) => onUpdate(plan.filter(p => p.id !== id));
+  const remove = (id: string) => onRemove(id);
 
   const movableIds = plan.filter(item => canEdit && isReorderable(item)).map(item => item.id);
   const reorder = async (sourceId: string, targetId: string) => {
@@ -106,9 +109,10 @@ export function PlanList({ plan, canEdit, canApprove, onUpdate, onReorder, onApp
     e.preventDefault();
     const title = newTitle.trim();
     if (!title) return;
-    // Newly requested work stays a draft until the owner approves it.
-    const item: PlanItem = { id: `u${Date.now().toString(36)}`, title, status: 'draft' };
-    onUpdate([...plan, item]);
+    // The server decides the id, and broadcasts plan.item_added — so an add can never
+    // clobber a task someone else added a second earlier. New work stays a draft until
+    // the owner approves it.
+    onAdd(title);
     setNewTitle('');
   };
 
@@ -118,7 +122,7 @@ export function PlanList({ plan, canEdit, canApprove, onUpdate, onReorder, onApp
         <span>Plan</span>
         <span>
           {plan.length === 0 ? 'empty' : hasDrafts ? 'draft' : `${done} of ${plan.length} done`}
-          {canEdit && plan.length > 0 ? ' · click a task to edit' : ''}
+          {canEdit && plan.length > 0 ? ' · drag ⋮⋮ to reorder · click a task to edit' : ''}
         </span>
       </div>
 
