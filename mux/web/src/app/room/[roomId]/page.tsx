@@ -594,6 +594,26 @@ export default function RoomPage() {
     }
   }, [roomId]);
 
+  const handleCoderStop = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      await api.stopCoder(roomId);
+    } catch (error) {
+      console.error('Failed to stop the coder:', error);
+      alert(`Could not stop the coder: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId]);
+
+  const handleCoderStart = useCallback(async () => {
+    if (!roomId) return;
+    try {
+      await api.startCoder(roomId);
+    } catch (error) {
+      console.error('Failed to start the coder:', error);
+      alert(`Could not start the coder: ${error instanceof Error ? error.message : 'please try again'}`);
+    }
+  }, [roomId]);
+
   const handleRewind = useCallback(async (checkpointId: string) => {
     if (!roomId) return;
     try {
@@ -749,6 +769,8 @@ export default function RoomPage() {
             onPlanRun={handlePlanRun}
             onKickoff={handleKickoff}
             roomDescription={room.description}
+            onCoderStart={handleCoderStart}
+            onCoderStop={handleCoderStop}
           />
         </main>
         <NotificationToasts />

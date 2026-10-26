@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-import httpx
+import httpx2 as httpx
 import pytest
 from openai import BadRequestError
 from pydantic import BaseModel

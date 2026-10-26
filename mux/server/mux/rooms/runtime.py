@@ -75,6 +75,9 @@ RETRY, SKIP = "Retry", "Skip"
 FIX_TITLE = "Fix errors in the code"
 MAX_FIX_ATTEMPTS = 2  # fix tasks in a row that leave errors behind before the room is asked to step in
 MAX_REPORTED_ERRORS = 10
+# A single free-model task must not consume most of OpenRouter's 50 daily requests.
+# Rooms that need a longer autonomous run can still supply max_turns explicitly.
+DEFAULT_CODER_MAX_TURNS = 12
 
 # Sends an unstored envelope (agent.text.delta) to the room's sockets
 Publish = Callable[[str, dict[str, Any]], Awaitable[None]]
@@ -112,7 +115,7 @@ class RoomRuntime:
         publish: Optional[Publish] = None,
         vote_timeout: float = 60.0,
         question_timeout: float = 300.0,
-        max_turns: int = 40,
+        max_turns: int = DEFAULT_CODER_MAX_TURNS,
         model_error_interval: float = 60.0,
     ) -> None:
         self.actor = actor
@@ -131,6 +134,10 @@ class RoomRuntime:
         # tasks until the AI settings change, someone runs the plan, or the model answers again
         self._stuck: Optional[str] = None
         self._kickoff_task: Optional[asyncio.Task] = None
+        # Set by Stop: the coder takes no new tasks until Start or Resume (not in the log, so a
+        # restarted room starts with the coder running)
+        self._coder_paused = False
+        self._coder_task: Optional[asyncio.Task] = None
         self._current_kind: Optional[str] = None  # kind of the running task ("review", "understand" or None)
         self.understand_timeout = 600.0  # the kickoff stops waiting for the project read after this long
         self._task_waiters: dict[str, asyncio.Future[tuple[str, str]]] = {}  # plan item id -> (status, summary)
@@ -158,7 +165,9 @@ class RoomRuntime:
         for item in await self.actor.get_plan():
             if item.get("status") == "doing":
                 await self.actor.update_plan_item(item["id"], {"status": "todo"}, CODER)
-        self._tasks = [asyncio.create_task(self._consume()), asyncio.create_task(self._coder())]
+        self._tasks = [asyncio.create_task(self._consume())]
+        self._coder_task = asyncio.create_task(self._coder())
+        self._tasks.append(self._coder_task)
         self._wake.set()
 
     async def stop(self) -> None:
@@ -358,7 +367,7 @@ class RoomRuntime:
         await self._apply(action, message, plan)
 
     async def _apply(self, action: CoordinatorAction, message: Message, plan: list[PlanItem]) -> None:
-        if not plan and action.label in ("merge", "interrupt", "queue") and not self.kickoff_running:
+        if not plan and self._current_task is None and action.label in ("merge", "interrupt", "queue") and not self.kickoff_running:
             # The first actionable request starts the inspect → clarify → draft workflow. The message is
             # context for planning, never a direct instruction to the coder.
             self._kickoff_task = asyncio.create_task(self._kickoff(message.text))
@@ -527,7 +536,12 @@ class RoomRuntime:
         while True:
             await self._wake.wait()
             self._wake.clear()
+            # The room stopped the coder: queued work waits for Start or Resume
+            if self._coder_paused:
+                continue
             while True:
+                if self._coder_paused:
+                    break
                 task = await self._next_task()
                 if (task is None or self._stuck is not None or not self._model_available()
                         or not await self.actor.check_budget_allowance()):
@@ -623,6 +637,37 @@ class RoomRuntime:
         await self._ask(f"The coder stopped on \"{item['title']}\" ({why}). Retry it?", [RETRY, SKIP], SKIP,
                         item["id"], parked=True)
 
+    # ---- start / stop / resume (the plan's buttons) ----
+
+    async def stop_coder(self, user_id: str) -> bool:
+        """"Stop": interrupt whatever the coder is on right now (and a running kickoff). The interrupted
+        task goes back in the plan queued; what it hadn't started stays queued. False when the coder
+        was already stopped."""
+        if self._coder_paused:
+            return False
+        self._coder_paused = True
+        current = self._current_task
+        tasks = [t for t in (self._coder_task, self._kickoff_task) if t is not None and not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # The interrupted task keeps its "doing": it goes back in the queue like work that never ran
+            for item in await self.actor.get_plan():
+                if item.get("status") == "doing":
+                    await self.actor.update_plan_item(item["id"], {"status": "todo", "notes": "stopped — start to continue"}, user_id)
+        await self.actor.post_notice("coder.stopped", {"task_id": current}, user_id)
+        return True
+
+    async def resume_coder(self, user_id: str) -> None:
+        """"Start" and "Resume": the coder picks up the plan's queued tasks (stops are forgotten)."""
+        self._coder_paused = False
+        if self._coder_task is None or self._coder_task.done():
+            self._coder_task = asyncio.create_task(self._coder())
+            self._tasks.append(self._coder_task)
+        self._wake.set()
+        await self.actor.post_notice("coder.started", {}, user_id)
+
     # ---- fixing errors ----
 
     async def _check_code(self) -> None:
@@ -668,8 +713,14 @@ class RoomRuntime:
         own question stay for the team to answer. Returns how many tasks were retried."""
         waiting = {s.task_id: (qid, s.parked) for qid, s in self._questions.items() if s.task_id}
         retried = 0
+        unstopped = self._coder_paused
         if self._stuck is not None:
             self._resume()  # Run plan also retries the model after a pause
+            unstopped = True
+        if self._coder_paused:
+            await self.resume_coder(user_id)  # Run plan also gets a coder the room stopped
+        if unstopped:
+            # The tasks waiting for the coder go back in the queue with it
             retried = sum(1 for i in await self.actor.get_plan() if i.get("status") == "todo")
         for item in await self.actor.get_plan():
             if item.get("status") != "skipped_question":

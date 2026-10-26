@@ -299,7 +299,7 @@ def test_websocket_first_message_auth_and_resume(client):
         texts = [e["payload"]["text"] for e in dump if e["type"] == "message.posted"]
         assert texts == ["two"]
         _, seen = read_until(ws, lambda m: m["type"] == "presence.join")
-        stored = [m["seq"] for m in seen if m["type"] not in ("pong", "error", "presence.tab")]
+        stored = [m["seq"] for m in seen if not m["type"].startswith("presence.") and m["type"] not in ("pong", "error")]
         assert all(s > dump[-1]["seq"] for s in stored)
     finally:
         ws.__exit__(None, None, None)
@@ -455,9 +455,8 @@ def test_rehydration_restores_state(client):
     assert r.json()["owner_id"] == "alice"
     room = registry_call(client, reg.get_room, rid)
     plan = {i["id"]: i["status"] for i in registry_call(client, room.get_plan)}
-    # p2 was "doing": every room now has a runtime (main.agent_runtime_factory), and its start puts a task
-    # a restart interrupted back to "todo"
-    assert plan == {"p1": "todo", "p2": "todo"}
+    # Whole-plan updates cannot start work: newly added tasks are normalized to drafts until the owner approves.
+    assert plan == {"p1": "todo", "p2": "draft"}
     assert client.get(f"/api/files/{rid}/files/f.py", headers=auth("bob")).json()["content"] == "x=1"
     assert len(room.manifest.list_checkpoints()) == 1
 
@@ -1068,6 +1067,21 @@ def test_run_plan_needs_an_editor_and_a_model(client, monkeypatch):
     assert runtime is not None
     monkeypatch.setattr(runtime, "_model_available", lambda: True)
     assert client.post(f"/rooms/{rid}/plan/run", headers=auth("alice")).json() == {"accepted": True, "retried": 0}
+
+
+def test_coder_stop_and_start_needs_an_editor_and_a_model(client, monkeypatch):
+    rid = create_room(client)
+    client.post(f"/rooms/{rid}/members", json={"user_id": "bob", "role": "viewer"}, headers=auth("alice"))
+    assert client.post(f"/rooms/{rid}/coder/stop", headers=auth("bob")).status_code == 403
+    assert client.post(f"/rooms/{rid}/coder/start", headers=auth("bob")).status_code == 403
+    r = client.post(f"/rooms/{rid}/coder/start", headers=auth("alice"))
+    assert r.status_code == 409 and "no AI model" in r.json()["detail"]
+    runtime = room_registry.get_registry().runtime(rid)
+    monkeypatch.setattr(runtime, "_model_available", lambda: True)
+    # Start works whenever (it just sets the coder on the queued tasks), Stop is idempotent
+    assert client.post(f"/rooms/{rid}/coder/start", headers=auth("alice")).json() == {"accepted": True}
+    assert client.post(f"/rooms/{rid}/coder/stop", headers=auth("alice")).json() == {"accepted": True}
+    assert client.post(f"/rooms/{rid}/coder/stop", headers=auth("alice")).json() == {"accepted": True}
 
 
 def test_preview_errors_become_a_fix_task(client, monkeypatch):

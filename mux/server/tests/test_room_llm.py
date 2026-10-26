@@ -235,6 +235,23 @@ async def test_provider_errors_become_plain_words(secrets_key, code, words, stuc
     assert words in str(e.value) and e.value.stuck is stuck
 
 
+async def test_openrouter_daily_free_limit_pauses_until_the_reset(secrets_key):
+    import httpx2 as httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, headers={"X-RateLimit-Reset": "1792886400000"}, json={"error": {
+            "message": "Rate limit exceeded: free-models-per-day", "code": 429,
+        }})
+
+    default = OpenAILLM("https://provider.example/v1", "sk-server", {r: "m" for r in ModelRole},
+                        transport=httpx.MockTransport(handler), max_retries=0)
+    with pytest.raises(ModelError) as e:
+        await RoomLLM(room(None), default).chat(ModelRole.SUPER, [{"role": "user", "content": "hi"}])
+    assert e.value.stuck
+    assert "1,000 free-model requests" in str(e.value)
+    assert "2026-10-25 00:00 UTC" in str(e.value)
+
+
 async def test_other_errors_keep_the_provider_text_and_are_not_stuck(secrets_key):
     class Broken:
         async def chat(self, *a: Any, **kw: Any) -> LLMReply:

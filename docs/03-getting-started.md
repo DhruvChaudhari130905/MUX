@@ -68,6 +68,8 @@ When you create a room or import a project with **Plan it with me** ticked (it i
 
 The feed shows each step. An empty plan has a **Plan it with me** button for rooms created without it. It needs an AI model (the server's or the room's own); without one, nothing starts.
 
+While building, the plan section's buttons control the coder (editors only): **Stop the coder** interrupts the task it's on — it goes back in the plan queued — and **Resume building** (or **Start building** when it was idle) sends it back to the queued tasks. **Run plan** retries the tasks it stopped on for an answer.
+
 ### Teammates on other computers
 
 `localhost` only works on your machine. For a quick session, `make tunnel` (needs `brew install cloudflared`) gives the web app and API public https addresses and prints the two restart commands and the Supabase redirect URL to add. For something permanent, deploy the web app and API and set `NEXT_PUBLIC_API_URL` and `WEB_APP_URL` to their addresses.
@@ -105,6 +107,23 @@ Skills are guidance packs in Claude Code's format: a folder with a `SKILL.md` (a
 In a room, the owner opens **Tools** and switches skills on (they're off by default); **Reload** picks up folders added since the server started. The coder sees each enabled skill's name and description and loads the full instructions with `use_skill` when a task needs it; the feed shows "Using skill: …".
 
 Skills written for Claude Code's own tools (task lists, sub-agents, plan mode, git worktrees, the Bash tool) are marked **needs Claude Code**: MUX's coder can't do those parts. Guidance skills (design, testing practice, code review) work fully.
+
+## 🪟 Windows (no WSL)
+
+One command from the repo root handles first-run setup (backend venv + pip install, npm install) and then starts both processes in their own terminal windows:
+
+```powershell
+dev.cmd
+```
+
+| Command | What it does |
+|---|---|
+| `dev.cmd` | Backend venv + npm packages (first run only), then API on :8000 **and** web app on :3000 |
+| `dev.cmd -Demo` | Web app only, in **demo mode** (no backend, no API keys) |
+| `dev.cmd -ServerOnly` / `-WebOnly` | One process, in the current terminal |
+| `dev.cmd -SetupOnly` / `-SkipSetup` | Just the installs / skip the installs |
+
+Requirements: Python 3.11+ (tick *Add to PATH* in the installer) and Node 22 LTS in PATH. Uses `.venv\Scripts` instead of Makefile's Unix paths — `make` itself is not used on Windows.
 
 ## ⚡ Shortcut: the Makefile
 

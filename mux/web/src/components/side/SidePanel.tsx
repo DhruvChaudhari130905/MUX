@@ -46,6 +46,8 @@ interface SidePanelProps {
   onPlanRun: () => void;
   roomDescription: string;
   onKickoff: (brief: string) => Promise<void> | void;
+  onCoderStart: () => Promise<void> | void;
+  onCoderStop: () => Promise<void> | void;
   // Hidden (still mounted) while collapsed to its rail
   collapsed?: boolean;
   onCollapse?: () => void;
@@ -68,6 +70,8 @@ export function SidePanel({
   onPlanRun,
   onKickoff,
   roomDescription,
+  onCoderStart,
+  onCoderStop,
   collapsed,
   onCollapse,
 }: SidePanelProps) {
@@ -134,6 +138,9 @@ export function SidePanel({
             onRun={onPlanRun}
             onKickoff={onKickoff}
             initialBrief={roomDescription}
+            coderPaused={state.coder_paused}
+            onStart={onCoderStart}
+            onStop={onCoderStop}
           />
         </div>
       </div>

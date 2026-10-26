@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -82,8 +83,24 @@ _STATUS_TEXT: dict[int, tuple[str, bool]] = {
 def describe_api_error(e: Exception) -> tuple[str, bool] | None:
     """Plain words for a provider error the room can act on, and whether it is stuck; None for anything else."""
     if isinstance(e, APIStatusError):
+        if e.status_code == 429 and "free-models-per-day" in str(e):
+            reset = _rate_limit_reset(e)
+            when = f" It resets at {reset}." if reset else ""
+            return ("the OpenRouter free-model daily limit is exhausted (429)."
+                    f" Add $10 in OpenRouter credits to unlock 1,000 free-model requests per day.{when}", True)
         return _STATUS_TEXT.get(e.status_code)
     return None
+
+
+def _rate_limit_reset(e: APIStatusError) -> str | None:
+    """Format OpenRouter's epoch-millisecond reset header, if the provider sent one."""
+    try:
+        raw = e.response.headers.get("X-RateLimit-Reset")
+        if raw is None:
+            return None
+        return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (AttributeError, OSError, OverflowError, TypeError, ValueError):
+        return None
 
 
 class NoModel(ModelError):

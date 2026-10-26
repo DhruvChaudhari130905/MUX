@@ -309,6 +309,70 @@ async def test_run_plan_retries_every_stopped_task(setup):
     await registry.shutdown_all()
 
 
+async def test_stop_interrupts_a_running_task_and_start_runs_it_again(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    log = logs[actor.room_id]
+    runtime = runtimes[0]
+
+    # The coder's second turn hangs on a gate, so the task is genuinely mid-flight when Stop lands
+    gate = asyncio.Event()
+    turns = 0
+    real_chat = llm.chat
+
+    async def gated_chat(role, messages, **kwargs):
+        nonlocal turns
+        turns += 1
+        if turns == 2:  # turn 1 wrote the file; turn 2 waits until the test lets it go
+            await gate.wait()
+        return await real_chat(role, messages, **kwargs)
+
+    llm.chat = gated_chat
+    llm.push(tool_reply(("write_file", {"path": "a.txt", "content": "a\n"})))
+    await actor.approve_plan_items(["t1"], "alice")
+    await until(lambda: of_type(log, EventType.FILE_CREATED))
+
+    assert await runtime.stop_coder("alice") is True
+    await runtime.idle()
+    item = (await actor.get_plan())[0]
+    assert item["status"] == "todo" and item["notes"] == "stopped — start to continue"
+    assert [n["task_id"] for n in notices(log, "coder.stopped")] == ["t1"]
+    assert await runtime.stop_coder("alice") is False  # already stopped: nothing to interrupt
+
+    # Start runs the queued task again, straight through this time
+    gate.set()
+    llm.push(tool_reply(("finish_task", {"summary": "finished after start"})))
+    await runtime.resume_coder("alice")
+    await until(lambda: of_type(log, EventType.CHECKPOINT_CREATED))
+    assert (await actor.get_plan())[0]["status"] == "done"
+    assert notices(log, "coder.started") == [{}]
+    await registry.shutdown_all()
+
+
+async def test_stopping_an_idle_coder_queues_nothing_and_run_plan_unstops_it(setup):
+    registry, llm, logs, runtimes = setup
+    actor = await new_room(registry, llm, logs)
+    log = logs[actor.room_id]
+    runtime = runtimes[0]
+
+    # The coder has nothing running: Stop pauses it without touching the plan
+    assert await runtime.stop_coder("alice") is True
+    assert [(p["id"], p["status"]) for p in await actor.get_plan()] == [("t1", "draft")]
+    assert [n["task_id"] for n in notices(log, "coder.stopped")] == [None]
+
+    # The plan is approved while the coder is stopped: the task waits in the queue
+    await actor.approve_plan_items(["t1"], "alice")
+    await runtime.idle()
+    assert (await actor.get_plan())[0]["status"] == "todo"
+
+    # Run plan gets the coder going again and the queued task builds
+    llm.push(tool_reply(("finish_task", {"summary": "done after run plan"})))
+    assert await runtime.run_stopped("alice") == 1
+    await until(lambda: of_type(log, EventType.CHECKPOINT_CREATED))
+    assert (await actor.get_plan())[0]["status"] == "done"
+    await registry.shutdown_all()
+
+
 async def test_errors_left_after_a_task_become_a_fix_task_the_coder_runs(setup):
     registry, llm, logs, runtimes = setup
     actor = await new_room(registry, llm, logs)
@@ -1054,7 +1118,10 @@ async def test_a_task_from_one_person_holds_the_agents_edits_outside_their_folde
     actor = await new_room(registry, llm, logs)
     await backend_coder(actor)
     log = logs[actor.room_id]
-    llm.push(tool_reply(("finish_task", {"summary": "Booking page"})))
+    llm.push(
+        tool_reply(("finish_task", {"summary": "Booking page"})),
+        LogDraft(app="Yoga booking app."),
+    )
     await actor.approve_plan_items(["t1"], "alice")
     await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 1)
 
@@ -1063,8 +1130,11 @@ async def test_a_task_from_one_person_holds_the_agents_edits_outside_their_folde
         tool_reply(("write_file", {"path": "server/api.py", "content": "ok\n"}),
                    ("write_file", {"path": "web/App.tsx", "content": "<h1/>\n"})),
         tool_reply(("finish_task", {"summary": "Login button"})),
+        LogDraft(app="Yoga booking app."),
     )
     await actor.add_message("chat", "fix the login button", message_id="m1", user_id="ravi", enqueue=False)
+    await until(lambda: len(of_type(log, EventType.PLAN_ITEM_ADDED)) == 1)
+    await actor.approve_plan_items([(await actor.get_plan())[-1]["id"]], "alice")
     await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 2)
     task = (await actor.get_plan())[-1]
     assert task["requested_by"] == ["ravi"] and task["status"] == "done"
