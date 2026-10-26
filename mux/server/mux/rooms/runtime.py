@@ -358,7 +358,7 @@ class RoomRuntime:
         await self._apply(action, message, plan)
 
     async def _apply(self, action: CoordinatorAction, message: Message, plan: list[PlanItem]) -> None:
-        if not plan and action.label in ("merge", "interrupt", "queue") and not self.kickoff_running:
+        if not plan and self._current_task is None and action.label in ("merge", "interrupt", "queue") and not self.kickoff_running:
             # The first actionable request starts the inspect → clarify → draft workflow. The message is
             # context for planning, never a direct instruction to the coder.
             self._kickoff_task = asyncio.create_task(self._kickoff(message.text))

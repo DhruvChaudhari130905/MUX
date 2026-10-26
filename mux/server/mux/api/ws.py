@@ -101,7 +101,7 @@ async def room_websocket(
             room_id, actor.sequence, "presence.snapshot", user.id, {"users": snapshot}, _now(),
         )))
         # Records presence + sitting activity; reaches everyone (this client too) as presence.join
-        await actor.user_join(user_id=user.id)
+        await actor.user_join(user_id=user.id, user_name=user.name)
 
         while True:
             try:

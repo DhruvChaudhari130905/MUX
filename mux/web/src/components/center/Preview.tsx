@@ -163,7 +163,7 @@ function LiveApp({ fs, roomId, script, packageJson }: { fs: RoomFs; roomId: stri
   useEffect(() => {
     if (!support.ok || previewRoomId() !== roomId) return;
     updateRoomFs(roomId, fs);
-    void pushRoomFiles(roomId, fs.files);
+    void pushRoomFiles(roomId, fs.files).catch(() => undefined);
   });
 
   useEffect(() => {

@@ -282,6 +282,27 @@ def test_websocket_streams_catalog_envelopes(client):
         ws.__exit__(None, None, None)
 
 
+def test_websocket_presence_uses_authenticated_display_name(client):
+    rid = create_room(client)
+    named = jwt.encode(
+        {
+            "sub": "alice",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+            "email": "alice@x.dev",
+            "user_metadata": {"full_name": "Alice Smith"},
+        },
+        SECRET,
+        algorithm="HS256",
+    )
+    with client.websocket_connect(f"/rooms/{rid}/ws?token={named}") as ws:
+        dump = json.loads(ws.receive_text())
+        assert isinstance(dump, list)
+        join, _ = read_until(ws, lambda message: message["type"] == "presence.join")
+
+    assert join["payload"]["user"]["name"] == "Alice Smith"
+
+
 def test_websocket_first_message_auth_and_resume(client):
     rid = create_room(client)
     client.post(f"/rooms/{rid}/messages", json={"text": "one"}, headers=auth("alice"))
@@ -299,7 +320,7 @@ def test_websocket_first_message_auth_and_resume(client):
         texts = [e["payload"]["text"] for e in dump if e["type"] == "message.posted"]
         assert texts == ["two"]
         _, seen = read_until(ws, lambda m: m["type"] == "presence.join")
-        stored = [m["seq"] for m in seen if m["type"] not in ("pong", "error", "presence.tab")]
+        stored = [m["seq"] for m in seen if m["type"] not in ("pong", "error", "presence.tab", "presence.snapshot")]
         assert all(s > dump[-1]["seq"] for s in stored)
     finally:
         ws.__exit__(None, None, None)
@@ -455,9 +476,8 @@ def test_rehydration_restores_state(client):
     assert r.json()["owner_id"] == "alice"
     room = registry_call(client, reg.get_room, rid)
     plan = {i["id"]: i["status"] for i in registry_call(client, room.get_plan)}
-    # p2 was "doing": every room now has a runtime (main.agent_runtime_factory), and its start puts a task
-    # a restart interrupted back to "todo"
-    assert plan == {"p1": "todo", "p2": "todo"}
+    # p2 was new in the bulk edit, so approval gating keeps it a draft. p1 was approved and remains todo.
+    assert plan == {"p1": "todo", "p2": "draft"}
     assert client.get(f"/api/files/{rid}/files/f.py", headers=auth("bob")).json()["content"] == "x=1"
     assert len(room.manifest.list_checkpoints()) == 1
 

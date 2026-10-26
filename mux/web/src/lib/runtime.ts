@@ -6,6 +6,7 @@ import { initWebContainer } from './webcontainer';
 import { BINARY_ASSET, bytesToDataUrl, fileBytes, maxBytesFor } from './binaryFiles';
 import { notify } from './notifications';
 import { dropSnapshot, loadSnapshot, saveSnapshot, snapshotKey } from './packageSnapshots';
+import { enqueueSync } from './syncQueue';
 
 export interface RoomFs {
   files: Map<string, { content: string }>;
@@ -187,7 +188,7 @@ export function updateRoomFs(roomId: string, fs: RoomFs) {
 
 // Room → container: write what changed since the last sync, delete what the room no longer has
 export function pushRoomFiles(roomId: string, files: Map<string, { content: string }>): Promise<void> {
-  pushChain = pushChain.then(async () => {
+  const queued = enqueueSync(pushChain, async () => {
     if (mountedRoom !== roomId) return;
     const wc = await container();
     for (const [path, { content }] of Array.from(files)) {
@@ -201,13 +202,15 @@ export function pushRoomFiles(roomId: string, files: Map<string, { content: stri
       await wc.fs.rm(path, { force: true });
       synced.delete(path);
     }
-  }).catch(err => {
+  }, err => {
     console.warn('WebContainer sync failed:', err);
     if (mountedRoom === roomId && previewRoom === roomId) {
       setPreview({ phase: 'error', error: `Preview file sync failed: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
-  return pushChain;
+  // Keep the queue usable after one failed sync, while returning this sync's rejection to its caller.
+  pushChain = queued.queue;
+  return queued.result;
 }
 
 // Writes straight into the container; the watcher then copies the file into the room like any shell edit

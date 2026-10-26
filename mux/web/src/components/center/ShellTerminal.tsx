@@ -85,7 +85,7 @@ export function ShellTerminal({ roomId, fs, active, onExit, onControl, startDir 
     if (!fallback) updateRoomFs(roomId, fs);
   });
   useEffect(() => {
-    if (!fallback) void pushRoomFiles(roomId, fs.files);
+    if (!fallback) void pushRoomFiles(roomId, fs.files).catch(() => undefined);
   }, [roomId, fs.files, fallback]);
 
   useEffect(() => {

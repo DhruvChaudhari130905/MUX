@@ -1065,6 +1065,9 @@ async def test_a_task_from_one_person_holds_the_agents_edits_outside_their_folde
         tool_reply(("finish_task", {"summary": "Login button"})),
     )
     await actor.add_message("chat", "fix the login button", message_id="m1", user_id="ravi", enqueue=False)
+    await until(lambda: len(of_type(log, EventType.PLAN_ITEM_ADDED)) == 1)
+    task_id = (await actor.get_plan())[-1]["id"]
+    await actor.approve_plan_items([task_id], "alice")
     await until(lambda: len(of_type(log, EventType.TASK_FINISHED)) == 2)
     task = (await actor.get_plan())[-1]
     assert task["requested_by"] == ["ravi"] and task["status"] == "done"
