@@ -1,0 +1,31 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "sandbox-image": {
+      "root": "mux/infra/sandbox-image",
+      "framework": "vite"
+    },
+    "server": {
+      "root": "mux/server",
+      "framework": "fastapi"
+    },
+    "web": {
+      "root": "mux/web",
+      "framework": "nextjs"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "server"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ]
+}
