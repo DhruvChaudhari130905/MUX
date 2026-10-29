@@ -7,13 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libpq-dev libffi-dev build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy everything first so editable install finds the mux package
 COPY pyproject.toml ./
+COPY mux ./mux
+
+# Install Python dependencies (editable install so mux/ is importable)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
     && pip install --no-cache-dir -e .
-
-# Copy the MUX application code
-COPY mux ./mux
 
 # Default environment (override on Render dashboard)
 ENV DATABASE_URL=""
