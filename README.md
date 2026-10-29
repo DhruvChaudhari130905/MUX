@@ -114,7 +114,7 @@ Target: **≥ 40% fewer tokens per finished task** than a naive agent loop: fres
 <td valign="top">
 
 ### 🌐 Live preview + GitHub export
-Apps run **in your browser** through WebContainers, builds and tests run in **Docker sandboxes** (or Nebius Token Factory Sandboxes), and the owner exports clean code straight to GitHub.
+Apps run **in your browser** through WebContainers, builds and tests run in **Nebius Token Factory Sandboxes** (or Docker sandboxes), and the owner exports clean code straight to GitHub.
 
 </td>
 </tr>
