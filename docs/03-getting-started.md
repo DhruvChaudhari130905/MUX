@@ -182,8 +182,26 @@ All of these are in `mux/server/.env.example`; `mux/config.py` reads them.
 | `mux/web` | `npm run lint` | 0 errors |
 | `mux/web` | `npm run build` | passes |
 | `mux/web` | `npm audit --omit=dev` | no high or critical |
-| `mux/server` | `pytest -q` | all pass |
+| `mux/server` | `make test-server` | all pass (scripted suite, no Docker) |
 | `mux/server` | `pyright mux tests scripts` | 0 errors |
+
+The scripted suite (`make test-server`) uses fakes — no Docker needed — and runs on every change.
+
+### Everything at once (required before every release)
+
+| Where | Command | Expect |
+|---|---|---|
+| `mux/server` | `make check-all` | all pass (scripted + Docker + typecheck + web build) |
+
+`make check-all` runs the scripted suite plus the real Docker suite (`make test-docker`), plus backend type-check and the full web build. The Docker suite has two layers:
+
+1. **Sandbox-level** (`tests/test_docker_sandbox_real.py`): calls `DockerSandboxClient.run()` directly against real throwaway containers — verifies file transfer, commands, timeouts, and missing images.
+2. **E2E room flow** (`tests/test_e2e_docker.py`): creates a real room, scripts the coder via `FakeLLM`, and drives a full task through `run_build` in Docker → `TASK_FINISHED` event — verifies the coordinator → coder → sandbox → event pipeline.
+
+Together they catch real-world problems — bad file transfers, failing commands, missing packages, truncated output, broken wiring between actor, runtime, and sandbox — that scripted tests can't.
+
+**Locally:** Docker tests are optional. Run `make test-server` for fast iteration without Docker. Run `make check-all` before pushing a release candidate; Docker and the `mux-sandbox` image must be available.
+
 
 ## 🩺 Troubleshooting
 

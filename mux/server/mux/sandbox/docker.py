@@ -82,7 +82,10 @@ class DockerSandboxClient:
             out, err = await asyncio.wait_for(proc.communicate(_tar(files)), timeout_s)
         except asyncio.TimeoutError:
             await self._remove(name)
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass  # container already exited on its own
             await proc.wait()
             raise SandboxError(f"timed out after {timeout_s}s") from None
         # 125: docker itself failed (daemon down, image missing), not the command

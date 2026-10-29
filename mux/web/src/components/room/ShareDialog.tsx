@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { X, Copy, UserPlus, UserCheck, MessageCircle, Trash2, KeyRound, Mail } from 'lucide-react';
 import type { Invite, Room } from '@/types';
 import { api } from '@/lib/api';
+import { useEscapeClose } from '@/lib/useEscapeClose';
 import { AccessSection } from './AccessSection';
 
 interface ShareDialogProps {
@@ -58,6 +59,8 @@ export function ShareDialog({ isOpen, onClose, room: initialRoom, isOwner }: Sha
     setPasswordNotice(null);
     api.listInvites(room.id).then(setInvites).catch(error => console.error('Failed to load invites:', error));
   }, [isOpen, isOwner, room.id]);
+
+  useEscapeClose(isOpen, onClose);
 
   if (!isOpen) return null;
 

@@ -4,7 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { X, Plug, RefreshCw, Trash2 } from 'lucide-react';
 import type { McpTool, McpToolSetting, RoomMcp, RoomSkill } from '@/types';
 import { api } from '@/lib/api';
-
+import { useEscapeClose } from '@/lib/useEscapeClose';
 interface ToolsDialogProps {
   isOpen: boolean;
   onClose: () => void;
@@ -66,6 +66,8 @@ export function ToolsDialog({ isOpen, onClose, roomId, isOwner }: ToolsDialogPro
     api.getMcp(roomId).then(setMcp).catch(e => setError(e instanceof Error ? e.message : 'Could not load MCP servers'));
     api.getSkills(roomId).then(setSkills).catch(e => setError(e instanceof Error ? e.message : 'Could not load skills'));
   }, [isOpen, roomId]);
+
+  useEscapeClose(isOpen, onClose);
 
   if (!isOpen) return null;
 

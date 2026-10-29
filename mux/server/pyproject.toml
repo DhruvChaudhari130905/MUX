@@ -45,6 +45,9 @@ include = ["mux*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "docker: requires real Docker and the mux-sandbox image (run via make test-docker)",
+]
 
 [tool.pyright]
 venvPath = "."

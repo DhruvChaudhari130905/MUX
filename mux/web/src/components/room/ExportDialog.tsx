@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { X, Github, Lock, Globe, ExternalLink, Check } from 'lucide-react';
 import type { Room } from '@/types';
 import { api } from '@/lib/api';
+import { useEscapeClose } from '@/lib/useEscapeClose';
 
 interface ExportDialogProps {
   isOpen: boolean;
@@ -22,6 +23,8 @@ export function ExportDialog({ isOpen, onClose, room }: ExportDialogProps) {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState<string | null>(null);
+
+  useEscapeClose(isOpen, onClose);
 
   if (!isOpen) return null;
 
