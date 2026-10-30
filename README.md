@@ -182,6 +182,59 @@ Details: **[Status & roadmap](docs/07-status-and-roadmap.md)**
 
 Four students, four lanes: **P-API**, **P-DB**, **P-Agent-A** (coordinator & memory), **P-Agent-B** (coder agent). See [Contributing](docs/08-contributing.md).
 
+## 🧪 Test profiles (3)
+
+| Profile | ID (email) | Password | Role | What it tests |
+|---|---|---|---|---|
+| Dana Rivera | dana@mux.test | MuxTest123! | Product Manager | Scope steering, PM 2× vote on scope conflicts, plan approval |
+| Kai Torres | kai@mux.test | MuxTest123! | Designer | UI conflict votes (button color, theme), Design 2× vote on UI |
+| Sam Lee | sam@mux.test | MuxTest123! | Engineer | Architecture votes, manual file edits, version-stamp collisions |
+
+These run against the demo room (`room/demo-yoga`) in demo mode; no backend or API keys needed.
+
+## 🎬 Demo profiles (3)
+
+| Profile | ID (email) | Password | Role | Part in the demo |
+|---|---|---|---|---|
+| Priya | priya@mux.test | MuxDemo123! | Owner | Creates the room, approves the plan, overrides the vote |
+| Dan | dan@mux.test | MuxDemo123! | Editor | Queues the login page, pushes for blue buttons |
+| Sam | sam@mux.test | MuxDemo123! | Viewer | Watches live, never derails the agent |
+
+Matches the avatars in `demos/mux-room-demo.html`. Used for the sub-3-minute demo video (PRD §9).
+
+## 🤖 Models used, purpose, and how they helped
+
+| Job | Model | Purpose | How it helped |
+|---|---|---|---|
+| Coordinator: labels every message | Nemotron 3.5 Lightning | Classifies merge / queue / interrupt / conflict / chat in < 2 s p50 | Low latency keeps steering live |
+| Coordinator: first plan | Nemotron 3 Super | Drafts the task plan from the app description | Plan quality, runs once per room |
+| Coder | Nemotron 3 Super → Ultra after 2 failed builds | Writes all code via a fixed toolset | Coding quality; Ultra rescues failing tasks |
+| Log compaction | Nemotron 3.5 Lightning | Compacts task logs into a day log at sitting end | Short, structured output, token-frugal |
+| Conflict research | Tavily (not a Nemotron model) | Cited evidence attached to conflict cards | Role-weighted votes have sources |
+
+See `source-of-truth/prd.md` §7.1 for the full model mapping.
+
+## ☁️ Hosting on Nebius AI Cloud
+
+- **Backend:** FastAPI + uvicorn behind Caddy (TLS + WebSocket upgrade) on a **Nebius CPU VM**.
+- **Models:** NVIDIA Nemotron 3 (Lightning / Super / Ultra) via **Nebius Token Factory**.
+- **Builds & tests:** **Nebius Token Factory Sandboxes** from a prebuilt starter image.
+- **Storage & auth:** Supabase Postgres + Supabase Auth (all data goes through the backend; no AI holds secrets).
+- **Preview:** WebContainer in the browser; optional Nebius sandbox port exposure under investigation (PRD §11).
+
+## 🏁 Nebius × NVIDIA hackathon submission
+
+Hard requirements (PRD §4):
+- [ ] Runs on Nebius Token Factory (models) and Nebius AI Cloud (backend)
+- [ ] Uses at least one NVIDIA open model (Nemotron 3 family) ✓
+- [ ] Public repo with MIT license and README with setup instructions
+- [ ] Working live demo URL
+- [ ] Demo video under 3 minutes, on YouTube, with audio
+- [ ] Project description and tool feedback write-up
+- [ ] All work created during the submission period (Aug 26 – Oct 30, 2026)
+
+Submission due **Oct 30, 2026, 10:00 AM PT** (internal deadline: Oct 28).
+
 ---
 
 <div align="center">

@@ -283,6 +283,8 @@ export interface RoomState {
   return_checkpoint_id: string | null;
   budget: Budget;
   presence: Presence[];
+  // The room pressed Stop: the coder takes no tasks until Start / Resume (from coder.stopped / coder.started)
+  coder_paused: boolean;
   current_user: User;
   current_user_membership: Membership;
 }
@@ -301,6 +303,8 @@ export type EventType =
   | 'mcp.unavailable'
   | 'ai.changed'
   | 'ai.error'
+  | 'coder.started'
+  | 'coder.stopped'
   | 'kickoff.requested'
   | 'kickoff.step'
   | 'skills.changed'

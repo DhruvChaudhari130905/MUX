@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, GripVertical, Play, Plus, Trash2, X } from 'lucide-react';
+import { ChevronDown, ChevronUp, GripVertical, Play, Plus, Square, Trash2, X } from 'lucide-react';
 import type { PlanItem } from '@/types';
 
 interface PlanListProps {
@@ -20,6 +20,9 @@ interface PlanListProps {
   onRun?: () => Promise<void> | void;
   initialBrief: string;
   onKickoff?: (brief: string) => Promise<void> | void;
+  coderPaused: boolean;
+  onStart?: () => Promise<void> | void;
+  onStop?: () => Promise<void> | void;
 }
 
 const statusStyles: Record<string, string> = {
@@ -42,9 +45,11 @@ const statusLabels: Record<string, string> = {
 const isChangeable = (item: PlanItem) => item.status !== 'done' && item.status !== 'doing';
 const isReorderable = (item: PlanItem) => item.status === 'draft' || item.status === 'todo';
 
-export function PlanList({ plan, canEdit, canApprove, onAdd, onRename, onRemove, onReorder, onApprove, onRun, initialBrief, onKickoff }: PlanListProps) {
+// Each edit sends the whole plan, built from the latest plan the room has seen
+export function PlanList({ plan, canEdit, canApprove, onAdd, onRename, onRemove, onReorder, onApprove, onRun, initialBrief, onKickoff, coderPaused, onStart, onStop }: PlanListProps) {
   const [newTitle, setNewTitle] = useState('');
   const [running, setRunning] = useState(false);
+  const [busy, setBusy] = useState<'start' | 'stop' | ''>('');
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [savingOrder, setSavingOrder] = useState(false);
   const [kickoffOpen, setKickoffOpen] = useState(false);
@@ -54,6 +59,17 @@ export function PlanList({ plan, canEdit, canApprove, onAdd, onRename, onRemove,
   const hasDrafts = plan.some(p => p.status === 'draft');
   const stopped = plan.filter(p => p.status === 'skipped_question').length;
   const done = plan.filter(p => p.status === 'done').length;
+  const doing = plan.some(p => p.status === 'doing');
+  const queued = plan.filter(p => p.status === 'todo').length;
+
+  const coderAction = async (kind: 'start' | 'stop', action?: () => Promise<void> | void) => {
+    setBusy(kind);
+    try {
+      await action?.();
+    } finally {
+      setBusy('');
+    }
+  };
 
   const rename = (id: string, title: string) => {
     const clean = title.trim();
@@ -234,6 +250,45 @@ export function PlanList({ plan, canEdit, canApprove, onAdd, onRename, onRemove,
             <Plus className="h-4 w-4" />
           </button>
         </form>
+      )}
+
+      {canEdit && coderPaused && onStart && (
+        <button
+          className="btn primary mt-2 flex w-full items-center justify-center gap-1.5"
+          type="button"
+          disabled={busy !== ''}
+          onClick={() => coderAction('start', onStart)}
+          title="The coder builds the plan's queued tasks again"
+        >
+          <Play className="h-3.5 w-3.5" />
+          {busy === 'start' ? 'Starting…' : queued ? `Resume building · ${queued} queued ${queued === 1 ? 'task' : 'tasks'}` : 'Resume building'}
+        </button>
+      )}
+
+      {canEdit && !coderPaused && doing && onStop && (
+        <button
+          className="btn mt-2 flex w-full items-center justify-center gap-1.5"
+          type="button"
+          disabled={busy !== ''}
+          onClick={() => coderAction('stop', onStop)}
+          title="Interrupt the task the coder is on: it goes back in the plan queued"
+        >
+          <Square className="h-3.5 w-3.5" />
+          {busy === 'stop' ? 'Stopping…' : 'Stop the coder'}
+        </button>
+      )}
+
+      {canEdit && !coderPaused && !doing && queued > 0 && onStart && (
+        <button
+          className="btn mt-2 flex w-full items-center justify-center gap-1.5"
+          type="button"
+          disabled={busy !== ''}
+          onClick={() => coderAction('start', onStart)}
+          title="The coder builds the plan's queued tasks now"
+        >
+          <Play className="h-3.5 w-3.5" />
+          {busy === 'start' ? 'Starting…' : `Start building · ${queued} queued ${queued === 1 ? 'task' : 'tasks'}`}
+        </button>
       )}
 
       {stopped > 0 && canEdit && onRun && (

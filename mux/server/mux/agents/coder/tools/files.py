@@ -18,7 +18,7 @@ from typing import Any, Callable, Iterable, Protocol
 from mux.files.binary import data_url_bytes
 from mux.files.manifest import LiveFiles
 from mux.files.room_files import InvalidPath, RoomFiles, check_path
-from mux.rooms.file_access import ChangeHeld
+from mux.rooms.file_access import ChangeHeld, ChangeRequest
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".pytest_cache", "dist"}
 CODER = "coder"
@@ -100,7 +100,7 @@ def apply_edits(path: str, content: str, edits: Iterable[dict[str, str]], versio
     return updated
 
 
-def _stale(path: str, current: int | None, error: str = "stale: re-read first") -> dict[str, Any]:
+def _stale(path: str, current: int | str | None, error: str = "stale: re-read first") -> dict[str, Any]:
     return {"ok": False, "error": error, "path": path, "current_version": current}
 
 
@@ -181,6 +181,7 @@ class RoomActorFiles(Protocol):
     async def list_files(self) -> list[str]: ...
     async def save_checked(self, path: str, content: str | None, base_version: int | None, user_id: str,
                            on_behalf_of: Iterable[str] = (), task_id: str | None = None) -> tuple[str, int | None]: ...
+    def held_change(self, task_id: str | None, path: str) -> ChangeRequest | None: ...
 
 
 class ActorFileTools:
@@ -206,7 +207,7 @@ class ActorFileTools:
         content = await self.actor.get_file(check)
         version = await self.actor.file_version(check)
         # A change this task sent for approval reads back as made, so later edits build on it (same request)
-        held = self.actor.held_change(self.task_id, check) if hasattr(self.actor, "held_change") else None
+        held = self.actor.held_change(self.task_id, check)
         if held is not None and held.content is not None:
             content, version = held.content, version if version is not None else 0
         if content is None or version is None:

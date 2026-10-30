@@ -30,7 +30,7 @@ def classify(*script):
 def test_valid_first_try():
     d, llm = classify(MERGE)
     assert d.action.label == "merge" and d.attempts == 1 and not d.fallback
-    assert llm.calls[0].role is ModelRole.SUPER
+    assert llm.calls[0].role is ModelRole.LIGHTNING
     assert llm.calls[0].schema is CoordinatorAction
 
 

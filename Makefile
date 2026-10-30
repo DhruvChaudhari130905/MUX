@@ -5,7 +5,7 @@ SERVER := mux/server
 WEB := mux/web
 VENV := $(SERVER)/.venv
 
-.PHONY: help setup setup-server setup-web demo web server tunnel funnel db-up db-down sandbox-image test test-server typecheck-server check-web check
+.PHONY: help setup setup-server setup-web demo web server tunnel funnel db-up db-down sandbox-image test test-server test-docker test-release typecheck-server check-web check release-check check-all
 
 help: ## List the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-18s %s\n", $$1, $$2}'
@@ -44,8 +44,13 @@ db-down: ## Stop the local Postgres
 sandbox-image: ## Build the Docker image the coder's builds and tests run in (needs Docker running)
 	docker build -t mux-sandbox mux/infra/sandbox-image
 
-test-server: ## Backend tests (DB tests need `make db-up`)
-	cd $(SERVER) && .venv/bin/pytest -q
+test-server: ## Backend scripted tests (no Docker needed — required on every change)
+	cd $(SERVER) && .venv/bin/pytest -q -m "not docker"
+
+test-docker: sandbox-image ## Backend tests against real Docker (required before release; Docker + image needed)
+	cd $(SERVER) && .venv/bin/pytest -q -m "docker"
+
+test-release: test-server test-docker ## Full release gate: scripted suite + real Docker suite
 
 typecheck-server: ## Backend type check (pyright)
 	cd $(SERVER) && .venv/bin/pyright mux tests scripts
@@ -53,6 +58,10 @@ typecheck-server: ## Backend type check (pyright)
 check-web: ## Type-check, lint and build the web app
 	cd $(WEB) && npx tsc --noEmit && npm run lint -- --max-warnings=0 && NEXT_DIST_DIR=.next-build npm run build
 
-test: test-server ## Alias for test-server
+test: test-server ## Alias for test-server (scripted only)
 
-check: test-server typecheck-server check-web ## Everything to run before pushing
+check: test-server typecheck-server check-web ## Everything to run before pushing (scripted only)
+
+release-check: test-release ## Everything required before a release (scripted + real Docker)
+
+check-all: test-release typecheck-server check-web ## Everything at once: scripted tests + real Docker + typecheck + web build

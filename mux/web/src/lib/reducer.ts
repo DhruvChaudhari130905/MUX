@@ -26,6 +26,7 @@ export function createEmptyState(): RoomState {
     return_checkpoint_id: null,
     budget: { tokens_used: 0, runs_used: 0, tokens_cap: 2000000, runs_cap: 100 },
     presence: [],
+    coder_paused: false,
     current_user: { id: '', email: '', name: '', initials: '', color: '' },
     current_user_membership: { user_id: '', room_id: '', permission: 'viewer', domain_role: 'eng', user: { id: '', email: '', name: '', initials: '', color: '' } },
   };
@@ -337,6 +338,31 @@ export function applyEvent(state: RoomState, event: AppEvent): RoomState {
         text: paused
           ? `${error.charAt(0).toUpperCase()}${error.slice(1)}. The coder is paused until then; send a message or press Run plan to try again.`
           : `The AI model failed (${error}). The room's owner can change it in AI model.`,
+        created_at: event.ts,
+        user: { id: 'coordinator', email: '', name: 'Coordinator', initials: 'CO', color: 'hsl(190, 70%, 60%)' },
+      } as Message];
+      break;
+    }
+    case 'coder.stopped': {
+      // Stop was pressed: the coder halts now and its task went back in the plan queued
+      newState.coder_paused = true;
+      newState.messages = [...newState.messages, {
+        id: `coder-stopped-${event.seq}`,
+        room_id: newState.room.id,
+        user_id: 'coordinator',
+        text: 'The coder was stopped. Its remaining tasks wait until someone presses Start.',
+        created_at: event.ts,
+        user: { id: 'coordinator', email: '', name: 'Coordinator', initials: 'CO', color: 'hsl(190, 70%, 60%)' },
+      } as Message];
+      break;
+    }
+    case 'coder.started': {
+      newState.coder_paused = false;
+      newState.messages = [...newState.messages, {
+        id: `coder-started-${event.seq}`,
+        room_id: newState.room.id,
+        user_id: 'coordinator',
+        text: 'The coder is building again.',
         created_at: event.ts,
         user: { id: 'coordinator', email: '', name: 'Coordinator', initials: 'CO', color: 'hsl(190, 70%, 60%)' },
       } as Message];

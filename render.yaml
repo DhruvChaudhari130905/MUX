@@ -1,0 +1,42 @@
+services:
+  - type: web
+    name: mux-backend
+    env: docker
+    repo: https://github.com/DhruvChaudhari130905/MUX
+    rootDir: mux/server
+    dockerfilePath: Dockerfile
+    plan: free
+    region: oregon
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: TOKEN_FACTORY_API_KEY
+        sync: false
+      - key: TOKEN_FACTORY_BASE_URL
+        sync: false
+      - key: MODEL_LIGHTNING
+        sync: false
+      - key: MODEL_SUPER
+        sync: false
+      - key: MODEL_ULTRA
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: ROOM_SECRETS_KEY
+        generateValue: true
+      - key: ALLOW_UNVERIFIED_TOKENS
+        value: true
+      - key: SANDBOX_PROVIDER
+        value: none

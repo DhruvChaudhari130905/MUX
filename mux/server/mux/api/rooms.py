@@ -859,6 +859,35 @@ async def run_plan(
     return {"accepted": True, "retried": await runtime.run_stopped(current_user.id)}
 
 
+@router.post("/{room_id}/coder/stop")
+async def stop_coder_endpoint(
+    room_id: str,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """"Stop": interrupt the task the coder is on right now (it goes back in the plan queued); what
+    it hadn't started stays queued until Start or Resume."""
+    runtime = get_registry().runtime(room_id)
+    if runtime is None or not runtime.model_available():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room has no AI model, so the coder can't run")
+    await runtime.stop_coder(current_user.id)
+    return {"accepted": True}
+
+
+@router.post("/{room_id}/coder/start")
+async def start_coder_endpoint(
+    room_id: str,
+    current_user: User = Depends(require_editor),
+    actor: RoomActor = Depends(get_room_actor),
+) -> dict[str, Any]:
+    """"Start" and "Resume": the coder runs the plan's queued tasks again."""
+    runtime = get_registry().runtime(room_id)
+    if runtime is None or not runtime.model_available():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This room has no AI model, so the coder can't run")
+    await runtime.resume_coder(current_user.id)
+    return {"accepted": True}
+
+
 @router.post("/{room_id}/errors")
 async def report_errors(
     room_id: str,
@@ -956,7 +985,7 @@ async def save_file(
     request: FileSaveRequest,
     current_user: User = Depends(require_editor),
     actor: RoomActor = Depends(get_room_actor),
-) -> FileSaved:
+) -> FileSaved | JSONResponse:
     """Save a manual edit. 409 if someone else holds the lock or the file moved past `base_version`."""
     path = request.path.lstrip("/")
     current = await actor.file_version(path)
@@ -1006,7 +1035,7 @@ async def delete_file(
     path: str = Query(..., min_length=1),
     current_user: User = Depends(require_editor),
     actor: RoomActor = Depends(get_room_actor),
-) -> Accepted:
+) -> Accepted | JSONResponse:
     return await _delete(actor, path, current_user.id)
 
 
@@ -1016,7 +1045,7 @@ async def delete_file_by_path(
     file_path: str,
     current_user: User = Depends(require_editor),
     actor: RoomActor = Depends(get_room_actor),
-) -> Accepted:
+) -> Accepted | JSONResponse:
     return await _delete(actor, file_path, current_user.id)
 
 

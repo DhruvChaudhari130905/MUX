@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { Conflict, DomainRole, User } from '@/types';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
@@ -33,9 +33,17 @@ export function ConflictCard({
   const [votes, setVotes] = useState<Record<string, number>>({});
   const [userVote, setUserVote] = useState<string | null>(null);
   const [voteDone, setVoteDone] = useState(false);
+  const lastSeed = useRef<string | null>(null);
 
   // Initialize votes
   useEffect(() => {
+    // Only re-seed when the recorded votes, status or user actually changed: the room pushes many
+    // events (typing, messages) with fresh conflict objects, and re-seeding on those would drop the
+    // user's just-recorded vote until the next server update arrives
+    const seedKey = JSON.stringify([conflict.votes, conflict.status, currentUser.id]);
+    if (seedKey === lastSeed.current) return;
+    lastSeed.current = seedKey;
+
     const initialVotes: Record<string, number> = {};
     conflict.options.forEach(opt => { initialVotes[opt] = 0; });
     conflict.votes.forEach(v => { initialVotes[v.option] = (initialVotes[v.option] || 0) + v.weight; });
@@ -63,13 +71,24 @@ export function ConflictCard({
     return () => clearInterval(interval);
   }, [voteDone]);
 
+  // Weighted tally (numbers on each option) and voter count are different units: the weights are
+  // 2× for the domain role, so they must never be shown against a count of vote records
+  const myWeight = DOMAIN_ROLE_FOR[conflict.domain] === currentUserDomainRole ? 2 : 1;
   const totalVotes = Object.values(votes).reduce((a, b) => a + b, 0);
+  const voters = new Set(conflict.votes.map(v => v.user_id));
+  if (userVote) voters.add(currentUser.id);
 
   const handleVote = (option: string) => {
     if (voteDone || currentUserRole === 'viewer') return;
     onVote(conflict.id, option);
+    setVotes(prev => {
+      const next = { ...prev };
+      // switching options moves the vote: take the previous weight back before adding the new one
+      if (userVote) next[userVote] = Math.max(0, (next[userVote] || 0) - myWeight);
+      next[option] = (next[option] || 0) + myWeight;
+      return next;
+    });
     setUserVote(option);
-    setVotes(prev => ({ ...prev, [option]: prev[option] + 1 }));
   };
 
   const handleOverride = (option: string) => {
@@ -119,7 +138,7 @@ export function ConflictCard({
 
       <div className="voters">
         <span>
-          {totalVotes} of {conflict.votes.length} editors voted{' '}
+          {voters.size} editors voted{' '}
           {DOMAIN_ROLE_FOR[conflict.domain] === currentUserDomainRole && '· your role counts 2×'}
         </span>
         {currentUserRole === 'owner' && !voteDone && (

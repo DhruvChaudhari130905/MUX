@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { X, Bot } from 'lucide-react';
 import type { AiRole, RoomAi } from '@/types';
 import { api, ApiError } from '@/lib/api';
+import { useEscapeClose } from '@/lib/useEscapeClose';
 
 interface AiModelDialogProps {
   isOpen: boolean;
@@ -71,6 +72,8 @@ export function AiModelDialog({ isOpen, onClose, roomId, isOwner }: AiModelDialo
       }
     }).catch(e => setError(e instanceof Error ? e.message : 'Could not load the AI model'));
   }, [isOpen, roomId, isOwner]);
+
+  useEscapeClose(isOpen, onClose);
 
   if (!isOpen) return null;
 

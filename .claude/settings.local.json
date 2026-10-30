@@ -1,0 +1,38 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/dhruvchaudhari/Codes/thread/claude-hook.mjs\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/dhruvchaudhari/Codes/thread/claude-hook.mjs\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/Users/dhruvchaudhari/Codes/thread/claude-hook.mjs\"",
+            "timeout": 180,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

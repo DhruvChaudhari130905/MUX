@@ -56,32 +56,7 @@ async function demoFetch<T>(path: string, options: RequestInit): Promise<T> {
   if (roomMatch && roomMatch[2] === '/ai') return { source: 'server', provider: null, base_url: null, models: null, has_key: false } as T;
   if (roomMatch && roomMatch[2]?.startsWith('/mcp')) return { admin: [], servers: [] } as T;
   if (roomMatch && roomMatch[2] === '/kickoff') return { accepted: true } as T;
-  if (roomMatch && roomMatch[2] === '/plan' && method === 'PATCH') {
-    // Bulk edit (legacy path): replay the sent items the way the server would
-    getSocket(roomMatch[1]).injectEvent(demoPlanEditedEvent(roomMatch[1], body.items));
-    return { accepted: true, seq: nextDemoSeq() } as T;
-  }
-  if (roomMatch && roomMatch[2] === '/plan/items' && method === 'POST') {
-    // The server composes the item; demo does the same from the live state. New work stays a
-    // draft until the owner approves it.
-    const sock = getSocket(roomMatch[1]);
-    const item: PlanItem = { id: `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`, title: body.title, status: 'draft' };
-    sock.injectEvent(demoPlanItemAddedEvent(roomMatch[1], item));
-    return { accepted: true, seq: nextDemoSeq() } as T;
-  }
-  const itemMatch = roomMatch && roomMatch[2] ? roomMatch[2].match(/^\/plan\/items\/([^/]+)$/) : null;
-  if (roomMatch && itemMatch && method === 'PATCH') {
-    getSocket(roomMatch[1]).injectEvent(demoPlanItemUpdatedEvent(roomMatch[1], itemMatch[1], { title: body.title }));
-    return { accepted: true, seq: nextDemoSeq() } as T;
-  }
-  if (roomMatch && itemMatch && method === 'DELETE') {
-    getSocket(roomMatch[1]).injectEvent(demoPlanItemRemovedEvent(roomMatch[1], itemMatch[1]));
-    return { accepted: true, seq: nextDemoSeq() } as T;
-  }
-  if (roomMatch && roomMatch[2] === '/plan/approve') {
-    getSocket(roomMatch[1]).injectEvent(demoPlanApprovedEvent(roomMatch[1]));
-    return { accepted: true, seq: nextDemoSeq() } as T;
-  }
+  if (roomMatch && roomMatch[2] === '/plan/run') return { accepted: true, retried: 0 } as T;
   if (roomMatch && roomMatch[2] === '/errors') return { accepted: true, task_id: null } as T;
   if (path === '/github/connect' || path.endsWith('/export')) return { url: 'https://github.com' } as T;
   return { accepted: true, seq: nextDemoSeq(), version: (body.base_version ?? 0) + 1 } as T;
@@ -244,6 +219,12 @@ export const api = {
   // "Run plan": the coder retries every task it stopped on. 409 without an AI model
   runPlan: (roomId: string) =>
     fetchWithAuth<{ accepted: true; retried: number }>(`/rooms/${roomId}/plan/run`, { method: 'POST' }),
+  // Stop: the coder's task is interrupted and goes back in the plan queued. 409 without an AI model
+  stopCoder: (roomId: string) =>
+    fetchWithAuth<{ accepted: true }>(`/rooms/${roomId}/coder/stop`, { method: 'POST' }),
+  // Start / Resume: the coder runs the plan's queued tasks again. 409 without an AI model
+  startCoder: (roomId: string) =>
+    fetchWithAuth<{ accepted: true }>(`/rooms/${roomId}/coder/start`, { method: 'POST' }),
   // Errors the running app threw: the coder gets a "Fix errors" task (task_id null when one is already open)
   reportErrors: (roomId: string, errors: string[]) =>
     fetchWithAuth<{ accepted: true; task_id: string | null }>(`/rooms/${roomId}/errors`, {

@@ -36,8 +36,7 @@ class Decision:
 
 
 class Coordinator:
-    # Super until the Lightning spike passes
-    def __init__(self, llm: LLM, role: ModelRole = ModelRole.SUPER, reasoning: bool | None = None) -> None:
+    def __init__(self, llm: LLM, role: ModelRole = ModelRole.LIGHTNING, reasoning: bool | None = None) -> None:
         self._llm = llm
         self._role = role
         self._reasoning = reasoning

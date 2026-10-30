@@ -68,6 +68,8 @@ When you create a room or import a project with **Plan it with me** ticked (it i
 
 The feed shows each step. An empty plan has a **Plan it with me** button for rooms created without it. It needs an AI model (the server's or the room's own); without one, nothing starts.
 
+While building, the plan section's buttons control the coder (editors only): **Stop the coder** interrupts the task it's on — it goes back in the plan queued — and **Resume building** (or **Start building** when it was idle) sends it back to the queued tasks. **Run plan** retries the tasks it stopped on for an answer.
+
 ### Teammates on other computers
 
 `localhost` only works on your machine. For a quick session, `make tunnel` (needs `brew install cloudflared`) gives the web app and API public https addresses and prints the two restart commands and the Supabase redirect URL to add. For something permanent, deploy the web app and API and set `NEXT_PUBLIC_API_URL` and `WEB_APP_URL` to their addresses.
@@ -105,6 +107,23 @@ Skills are guidance packs in Claude Code's format: a folder with a `SKILL.md` (a
 In a room, the owner opens **Tools** and switches skills on (they're off by default); **Reload** picks up folders added since the server started. The coder sees each enabled skill's name and description and loads the full instructions with `use_skill` when a task needs it; the feed shows "Using skill: …".
 
 Skills written for Claude Code's own tools (task lists, sub-agents, plan mode, git worktrees, the Bash tool) are marked **needs Claude Code**: MUX's coder can't do those parts. Guidance skills (design, testing practice, code review) work fully.
+
+## 🪟 Windows (no WSL)
+
+One command from the repo root handles first-run setup (backend venv + pip install, npm install) and then starts both processes in their own terminal windows:
+
+```powershell
+dev.cmd
+```
+
+| Command | What it does |
+|---|---|
+| `dev.cmd` | Backend venv + npm packages (first run only), then API on :8000 **and** web app on :3000 |
+| `dev.cmd -Demo` | Web app only, in **demo mode** (no backend, no API keys) |
+| `dev.cmd -ServerOnly` / `-WebOnly` | One process, in the current terminal |
+| `dev.cmd -SetupOnly` / `-SkipSetup` | Just the installs / skip the installs |
+
+Requirements: Python 3.11+ (tick *Add to PATH* in the installer) and Node 22 LTS in PATH. Uses `.venv\Scripts` instead of Makefile's Unix paths — `make` itself is not used on Windows.
 
 ## ⚡ Shortcut: the Makefile
 
@@ -163,8 +182,26 @@ All of these are in `mux/server/.env.example`; `mux/config.py` reads them.
 | `mux/web` | `npm run lint` | 0 errors |
 | `mux/web` | `npm run build` | passes |
 | `mux/web` | `npm audit --omit=dev` | no high or critical |
-| `mux/server` | `pytest -q` | all pass |
+| `mux/server` | `make test-server` | all pass (scripted suite, no Docker) |
 | `mux/server` | `pyright mux tests scripts` | 0 errors |
+
+The scripted suite (`make test-server`) uses fakes — no Docker needed — and runs on every change.
+
+### Everything at once (required before every release)
+
+| Where | Command | Expect |
+|---|---|---|
+| `mux/server` | `make check-all` | all pass (scripted + Docker + typecheck + web build) |
+
+`make check-all` runs the scripted suite plus the real Docker suite (`make test-docker`), plus backend type-check and the full web build. The Docker suite has two layers:
+
+1. **Sandbox-level** (`tests/test_docker_sandbox_real.py`): calls `DockerSandboxClient.run()` directly against real throwaway containers — verifies file transfer, commands, timeouts, and missing images.
+2. **E2E room flow** (`tests/test_e2e_docker.py`): creates a real room, scripts the coder via `FakeLLM`, and drives a full task through `run_build` in Docker → `TASK_FINISHED` event — verifies the coordinator → coder → sandbox → event pipeline.
+
+Together they catch real-world problems — bad file transfers, failing commands, missing packages, truncated output, broken wiring between actor, runtime, and sandbox — that scripted tests can't.
+
+**Locally:** Docker tests are optional. Run `make test-server` for fast iteration without Docker. Run `make check-all` before pushing a release candidate; Docker and the `mux-sandbox` image must be available.
+
 
 ## 🩺 Troubleshooting
 
