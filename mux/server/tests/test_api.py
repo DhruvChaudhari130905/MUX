@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -747,6 +748,16 @@ def test_invite_is_kept_when_email_fails(client, monkeypatch):
     assert r.json()["email_sent"] is False and "SUPABASE_SERVICE_ROLE_KEY" in r.json()["email_error"]
     assert client.post(f"/rooms/{rid}/join", json={}, headers=auth_email("bob", "bob@x.dev")).status_code == 200
     assert role_in(client, rid, "bob") == "editor"
+
+
+def test_render_requires_the_public_web_app_url_for_email_redirects():
+    """Production must supply the deployed frontend URL; the local default points invitees to localhost."""
+    import yaml
+
+    manifest = yaml.safe_load((Path(__file__).resolve().parents[3] / "render.yaml").read_text())
+    env = manifest["services"][0]["envVars"]
+    web_app_url = next((item for item in env if item["key"] == "WEB_APP_URL"), None)
+    assert web_app_url is not None and web_app_url.get("sync") is False
 
 
 def test_revoked_invite_no_longer_admits(client, monkeypatch):

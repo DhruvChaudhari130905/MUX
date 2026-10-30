@@ -56,7 +56,7 @@ Everyone in a room shares one live session. There are three ways in; the owner m
 | **Email invite** | Owner enters their email and a role | Clicks the link in the email, signs in with that email | The invited role, even in a private room |
 | **Room ID + password** | Owner sets a password (when creating the room, or in Share) | Dashboard > **Join room**, enters the Room ID and password | Editor |
 
-Invite emails are sent by Supabase, which needs `SUPABASE_SERVICE_ROLE_KEY` in `mux/server/.env` and the web app's `/auth/callback` in Supabase's Redirect URLs. If an email can't be sent (no key, or Supabase's hourly email limit), the invite is still saved: send the link yourself and it works the same once they sign in with that email. Supabase's built-in mailer only sends a few emails an hour; add your own SMTP server in Supabase for more.
+Invite emails are sent by Supabase, which needs `SUPABASE_SERVICE_ROLE_KEY` in `mux/server/.env` and the web app's `/auth/callback` in Supabase's Redirect URLs. In production, set the backend's `WEB_APP_URL` to the deployed frontend origin (for example, `https://your-app.vercel.app`) and allow that origin's `/auth/callback` in Supabase. Otherwise, the server may send invite links back to its local default (`http://localhost:3000`). If an email can't be sent (no key, rejected redirect, or Supabase's hourly email limit), the invite is still saved: send the room link yourself and the invitee can join after signing in with that email. Supabase's built-in mailer only sends a few emails an hour; add your own SMTP server in Supabase for more.
 
 ## 🧭 Plan it with me
 

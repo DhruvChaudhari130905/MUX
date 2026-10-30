@@ -26,6 +26,8 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: WEB_APP_URL
+        sync: false
       - key: TAVILY_API_KEY
         sync: false
       - key: GITHUB_CLIENT_ID
